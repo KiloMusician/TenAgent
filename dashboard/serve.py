@@ -328,7 +328,7 @@ def detect_cli_status(root_dir: str) -> dict:
         success = _kernel32.Process32First(h_snap, ctypes.byref(pe32))
         while success:
             exe_name = pe32.szExeFile.decode('latin-1', errors='ignore').lower()
-            if any(cli in exe_name for cli in ('agy', 'claude', 'gemini', 'aider')):
+            if any(cli in exe_name for cli in ('agy', 'claude', 'gemini', 'aider', 'cursor', 'cline', 'codex', 'goose')):
                 pid = pe32.th32ProcessID
                 cwd = _get_process_cwd(pid)
                 if cwd:
@@ -345,6 +345,18 @@ def detect_cli_status(root_dir: str) -> dict:
                             break
                         elif 'aider' in exe_name:
                             found = {'name': 'Aider CLI', 'status': 'active', 'active': True}
+                            break
+                        elif 'cursor' in exe_name:
+                            found = {'name': 'Cursor IDE', 'status': 'active', 'active': True}
+                            break
+                        elif 'cline' in exe_name:
+                            found = {'name': 'Cline Assistant', 'status': 'active', 'active': True}
+                            break
+                        elif 'codex' in exe_name:
+                            found = {'name': 'Codex CLI', 'status': 'active', 'active': True}
+                            break
+                        elif 'goose' in exe_name:
+                            found = {'name': 'Goose CLI', 'status': 'active', 'active': True}
                             break
             success = _kernel32.Process32Next(h_snap, ctypes.byref(pe32))
     finally:

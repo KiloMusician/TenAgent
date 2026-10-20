@@ -28,6 +28,7 @@ def bootstrap_new_project(target_dir):
         "AGENTS.md",
         ".agents",
         "dashboard",
+        "assets",
         "office.bat",
         "council.py",
         "stream.py",

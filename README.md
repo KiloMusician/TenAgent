@@ -1,11 +1,24 @@
-# TenAgent: 10-Agent Engineering Swarm Workspace
+<p align="center">
+  <img src="dashboard/favicon.png" width="96" height="96" alt="TenAgent Logo" style="border-radius: 22px; box-shadow: 0 4px 14px rgba(0,0,0,0.12);">
+</p>
 
-> **An autonomous, contract-first engineering workspace that orchestrates AI coding into 10 specialized roles with live 2D visual monitoring and multi-model adversarial review.**
+<h1 align="center">TenAgent</h1>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Architecture: Clean](https://img.shields.io/badge/Architecture-Clean-brightgreen.svg)](#core-architecture)
-[![Dashboard: Port 7777](https://img.shields.io/badge/Virtual%20Office-Port%207777-orange.svg)](#virtual-office-monitor)
-[![Anti-Slop: Enabled](https://img.shields.io/badge/Code%20Style-Anti--Slop-ff69b4.svg)](#anti-slop-hygiene)
+<p align="center">
+  <b>10-Agent Engineering Swarm Workspace & 2D Virtual Office</b><br>
+  <i>An autonomous, contract-first multi-agent framework to take any software idea from concept to production with zero architectural drift.</i>
+</p>
+
+<p align="center">
+  <a href="#core-architecture"><img src="https://img.shields.io/badge/Architecture-Clean%20Swarm-brightgreen.svg" alt="Clean Architecture"></a>
+  <a href="#2d-virtual-office-monitor-dashboard"><img src="https://img.shields.io/badge/Virtual%20Office-Port%207777-orange.svg" alt="Virtual Office"></a>
+  <a href="#anti-slop-discipline"><img src="https://img.shields.io/badge/Code%20Standard-Anti--Slop-ff69b4.svg" alt="Anti-Slop"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
+</p>
+
+<p align="center">
+  <img src="assets/dashboard-preview.png" alt="TenAgent Virtual Office Monitor Dashboard" width="100%" style="border-radius: 12px; border: 1px solid rgba(0,0,0,0.1); margin-top: 12px;">
+</p>
 
 ---
 
@@ -22,40 +35,68 @@ As a project grows past a few files, three common failure modes occur:
 
 ---
 
-## Core Architecture
+## Core Architecture & Office Pods
+
+TenAgent organizes the engineering lifecycle into **5 Collaborative Office Pods**, mirroring a high-performing engineering organization:
 
 ```mermaid
 flowchart TD
-    Founder(["Founder / User"]) -->|"Project Idea & Scope"| PM["01. Product Manager"]
-    PM -->|"Discovery Interview & PRD"| Arch["02. System Architect"]
-    
-    subgraph Specifications Phase ["1. Specifications & Contract Locking"]
-        Arch -->|"Clean Architecture Layers"| Design["03. UI/UX Designer"]
-        Arch -->|"Layer Boundaries"| DBA["04. Database Engineer"]
-        Design -->|"Screen Flows & Tokens"| Contract["Shared Contract (specs/api/openapi.yaml)"]
-        DBA -->|"Normalized 3NF Schema"| Contract
+    classDef podStyle fill:#f8fafc,stroke:#cbd5e1,stroke-width:1.5px,rx:10px,color:#0f172a
+    classDef founderStyle fill:#0071e3,stroke:#005bb5,stroke-width:2px,color:#ffffff,rx:12px
+    classDef contractStyle fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1,rx:8px,stroke-dasharray: 4 4
+    classDef agentStyle fill:#ffffff,stroke:#e2e8f0,stroke-width:1.5px,rx:8px,color:#1e293b
+    classDef gateStyle fill:#fef2f2,stroke:#ef4444,stroke-width:1.5px,color:#991b1b,rx:8px
+    classDef prodStyle fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#065f46,rx:12px
+
+    Founder(["👤 Founder / User Prompt"]):::founderStyle
+
+    subgraph Pod1 ["🏢 POD 1: Strategy & Architecture (Phase 1)"]
+        direction LR
+        PM["01. Product Manager<br/><small>PRD & Scope Boundaries</small>"]:::agentStyle
+        Arch["02. System Architect<br/><small>Clean Architecture ADR-001</small>"]:::agentStyle
+        PM -->|"Feature Stories"| Arch
     end
-    
-    subgraph Parallel Implementation ["2. Contract-First Development"]
-        Contract -->|"Implements Domain & Use Cases"| Backend["05. Backend Engineer"]
-        Contract -->|"Implements UI & Client State"| ClientEng["06. Client Engineer"]
-        Design -.->|"DESIGN.md Tokens"| ClientEng
+
+    subgraph Pod2 ["📐 POD 2: Contracts & Foundations (Phase 2)"]
+        direction LR
+        Design["03. UI/UX Designer<br/><small>Screen Flows & DESIGN.md</small>"]:::agentStyle
+        DBA["04. Database Engineer<br/><small>3NF Schema & Data Dict</small>"]:::agentStyle
+        Contract["📜 Shared Contracts Lock<br/><b>specs/api/openapi.yaml</b> & <b>schema.sql</b>"]:::contractStyle
+        Design -->|"Tokens"| Contract
+        DBA -->|"Entities"| Contract
     end
-    
-    subgraph Quality Gates ["3. Verification & Hardening"]
-        Backend --> QA["07. QA Engineer (Bug Hunter)"]
-        ClientEng --> QA
-        QA --> Security["08. Security Engineer (OWASP)"]
-        Arch -.-> DevOps["09. DevOps Engineer (Docker/CI)"]
+
+    subgraph Pod3 ["💻 POD 3: Concurrent Engineering (Phase 3)"]
+        direction LR
+        Backend["05. Backend Engineer<br/><small>Domain Use Cases & REST API</small>"]:::agentStyle
+        ClientEng["06. Client Engineer<br/><small>Web/Mobile UI Implementation</small>"]:::agentStyle
     end
-    
-    subgraph Gatekeeping ["4. Gatekeeper Review"]
-        Security --> TL["10. Technical Lead"]
-        DevOps --> TL
-        TL -->|"Approved"| Production[("Verified Codebase")]
-        TL -.->|"Rejected with Diffs"| Backend
-        TL -.->|"Rejected with Diffs"| ClientEng
+
+    subgraph Pod4 ["🛡️ POD 4: Hardening & Security (Phase 4)"]
+        direction LR
+        QA["07. QA Engineer<br/><small>Regression & Boundary Tests</small>"]:::agentStyle
+        Security["08. Security Engineer<br/><small>OWASP Top 10 & Secret Audit</small>"]:::agentStyle
     end
+
+    subgraph Pod5 ["🚀 POD 5: Deployment & Release Gate (Phase 5)"]
+        direction LR
+        DevOps["09. DevOps Engineer<br/><small>Docker & CI/CD Pipelines</small>"]:::agentStyle
+        TechLead["10. Technical Lead<br/><small>6 Quality Gates Auditor</small>"]:::gateStyle
+        Production[("⭐ Verified Production Release")]:::prodStyle
+    end
+
+    Founder ==>|"Vision & Tasks"| Pod1
+    Pod1 ==>|"Architecture Lock"| Pod2
+    Contract ==>|"Parallel Build (No Blocking)"| Backend
+    Contract ==>|"Parallel Build (Mock Endpoints)"| ClientEng
+    Backend --> Pod4
+    ClientEng --> Pod4
+    Pod4 ==>|"Audit Pass"| DevOps
+    DevOps --> TechLead
+    TechLead -->|"APPROVED"| Production
+    TechLead -.->|"REJECTED (Diff Notes)"| Backend
+
+    class Pod1,Pod2,Pod3,Pod4,Pod5 podStyle
 ```
 
 ---
@@ -79,7 +120,7 @@ flowchart TD
 
 ## Key Capabilities
 
-### 1. 2D Animated Virtual Office Simulator (`dashboard/`)
+### 1. 2D Virtual Office Monitor (`dashboard/`)
 TenAgent includes a zero-dependency, ultra-lightweight web dashboard running on port `7777`:
 * **Zero GPU Lag**: Built entirely with pure semantic HTML5, CSS3, and responsive SVGs (under 60KB total). No bulky canvas or heavy WebGL dependencies.
 * **Live Process Inspection**: Click on any desk or roster card to open the **Engineer Dossier Modal** with persona traits, domain mandates, and deliverables.
@@ -142,6 +183,9 @@ Watch your 10 virtual engineers collaborate, debate edge cases, lock contracts, 
 ├── .agents/
 │   ├── roles/             # Detailed playbooks for all 10 engineering roles
 │   └── skills/            # Integrated anti-slop filters (code, UI, copywriting)
+├── assets/                # Screenshots and repository banner assets
+│   ├── logo.png           # High-resolution project logo
+│   └── dashboard-preview.png # Screenshot of the 2D Virtual Office
 ├── dashboard/             # 2D Animated Virtual Office Simulator
 │   ├── index.html         # Responsive SVG office interface & Dossier modal
 │   ├── serve.py           # Port-isolated HTTP server & CLI presence detector
