@@ -3872,13 +3872,15 @@
       const countBadge = document.getElementById('connected-ai-count');
       if (!container) return;
 
-      const providers = currentEngineConfig.providers || [];
+      const allProviders = currentEngineConfig.providers || [];
+      const providers = allProviders.filter(p => p && p.key && p.key.trim().length > 0 && p.status !== 'empty');
+
       if (countBadge) {
         countBadge.innerText = `${providers.length} Key${providers.length === 1 ? '' : 's'}`;
       }
 
       if (providers.length === 0) {
-        container.innerHTML = `<div class="ai-provider-empty">No External Keys</div>`;
+        container.innerHTML = `<div class="ai-provider-empty">No extra keys connected</div>`;
         return;
       }
 

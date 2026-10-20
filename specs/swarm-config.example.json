@@ -1,21 +1,4 @@
 {
   "engine": "native",
-  "providers": [
-    {
-      "provider": "gemini",
-      "key": "",
-      "name": "Google Gemini (2.5 Flash)",
-      "status": "empty",
-      "valid": false,
-      "statusDetail": "Optional: Add your Google AI Studio key"
-    },
-    {
-      "provider": "groq",
-      "key": "",
-      "name": "Groq (Llama / GPT-OSS)",
-      "status": "empty",
-      "valid": false,
-      "statusDetail": "Optional: Add your Groq API key"
-    }
-  ]
+  "providers": []
 }

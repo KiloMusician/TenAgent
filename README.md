@@ -2,8 +2,10 @@
   <img src="assets/logo.png" width="560" alt="TenAgent Logo">
 </p>
 
+<h1 align="center">TenAgent</h1>
+
 <p align="center">
-  <b>10-Agent Engineering Swarm Workspace & Virtual Office</b><br>
+  <b>10-Agent Engineering Swarm Workspace & 2D Virtual Office</b><br>
   <i>An autonomous, contract-first multi-agent framework to take any software idea from concept to production with zero architectural drift.</i>
 </p>
 
