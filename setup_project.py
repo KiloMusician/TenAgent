@@ -34,6 +34,7 @@ def bootstrap_new_project(target_dir):
         "stream.py",
         "stream.bat",
         "favicon.ico",
+        "LICENSE",
         ".gitignore"
     ]
 
