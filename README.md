@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="dashboard/favicon.png" width="96" height="96" alt="TenAgent Logo" style="border-radius: 22px; box-shadow: 0 4px 14px rgba(0,0,0,0.12);">
+  <img src="assets/logo.png" width="560" alt="TenAgent Logo">
 </p>
 
 <h1 align="center">TenAgent</h1>
@@ -41,48 +41,48 @@ TenAgent organizes the engineering lifecycle into **5 Collaborative Office Pods*
 
 ```mermaid
 flowchart TD
-    classDef podStyle fill:#f8fafc,stroke:#cbd5e1,stroke-width:1.5px,rx:10px,color:#0f172a
-    classDef founderStyle fill:#0071e3,stroke:#005bb5,stroke-width:2px,color:#ffffff,rx:12px
-    classDef contractStyle fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1,rx:8px,stroke-dasharray: 4 4
-    classDef agentStyle fill:#ffffff,stroke:#e2e8f0,stroke-width:1.5px,rx:8px,color:#1e293b
-    classDef gateStyle fill:#fef2f2,stroke:#ef4444,stroke-width:1.5px,color:#991b1b,rx:8px
-    classDef prodStyle fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#065f46,rx:12px
+    classDef podStyle fill:#0f172a,stroke:#334155,stroke-width:1px,rx:8px,color:#94a3b8
+    classDef founderStyle fill:#1e3a8a,stroke:#3b82f6,stroke-width:1.5px,rx:10px,color:#f8fafc
+    classDef contractStyle fill:#0c2340,stroke:#0284c7,stroke-width:1.5px,rx:6px,color:#7dd3fc,stroke-dasharray:4 4
+    classDef agentStyle fill:#1e293b,stroke:#475569,stroke-width:1px,rx:6px,color:#f1f5f9
+    classDef gateStyle fill:#2a121d,stroke:#e11d48,stroke-width:1px,rx:6px,color:#fda4af
+    classDef prodStyle fill:#062d24,stroke:#059669,stroke-width:1.5px,rx:10px,color:#a7f3d0
 
-    Founder(["👤 Founder / User Prompt"]):::founderStyle
+    Founder(["Founder / User Prompt"]):::founderStyle
 
-    subgraph Pod1 ["🏢 POD 1: Strategy & Architecture (Phase 1)"]
+    subgraph Pod1 ["Pod 1: Strategy & Architecture (Phase 1)"]
         direction LR
         PM["01. Product Manager<br/><small>PRD & Scope Boundaries</small>"]:::agentStyle
         Arch["02. System Architect<br/><small>Clean Architecture ADR-001</small>"]:::agentStyle
         PM -->|"Feature Stories"| Arch
     end
 
-    subgraph Pod2 ["📐 POD 2: Contracts & Foundations (Phase 2)"]
+    subgraph Pod2 ["Pod 2: Contracts & Foundations (Phase 2)"]
         direction LR
         Design["03. UI/UX Designer<br/><small>Screen Flows & DESIGN.md</small>"]:::agentStyle
         DBA["04. Database Engineer<br/><small>3NF Schema & Data Dict</small>"]:::agentStyle
-        Contract["📜 Shared Contracts Lock<br/><b>specs/api/openapi.yaml</b> & <b>schema.sql</b>"]:::contractStyle
+        Contract["Shared Contract Lock<br/><b>specs/api/openapi.yaml</b> & <b>schema.sql</b>"]:::contractStyle
         Design -->|"Tokens"| Contract
         DBA -->|"Entities"| Contract
     end
 
-    subgraph Pod3 ["💻 POD 3: Concurrent Engineering (Phase 3)"]
+    subgraph Pod3 ["Pod 3: Concurrent Engineering (Phase 3)"]
         direction LR
         Backend["05. Backend Engineer<br/><small>Domain Use Cases & REST API</small>"]:::agentStyle
         ClientEng["06. Client Engineer<br/><small>Web/Mobile UI Implementation</small>"]:::agentStyle
     end
 
-    subgraph Pod4 ["🛡️ POD 4: Hardening & Security (Phase 4)"]
+    subgraph Pod4 ["Pod 4: Hardening & Security (Phase 4)"]
         direction LR
         QA["07. QA Engineer<br/><small>Regression & Boundary Tests</small>"]:::agentStyle
         Security["08. Security Engineer<br/><small>OWASP Top 10 & Secret Audit</small>"]:::agentStyle
     end
 
-    subgraph Pod5 ["🚀 POD 5: Deployment & Release Gate (Phase 5)"]
+    subgraph Pod5 ["Pod 5: Deployment & Release Gate (Phase 5)"]
         direction LR
         DevOps["09. DevOps Engineer<br/><small>Docker & CI/CD Pipelines</small>"]:::agentStyle
         TechLead["10. Technical Lead<br/><small>6 Quality Gates Auditor</small>"]:::gateStyle
-        Production[("⭐ Verified Production Release")]:::prodStyle
+        Production[("Verified Production Release")]:::prodStyle
     end
 
     Founder ==>|"Vision & Tasks"| Pod1
