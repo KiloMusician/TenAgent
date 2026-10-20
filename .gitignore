@@ -1,0 +1,34 @@
+# Operating System & IDE Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python & Local Caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.gemini/
+*.log
+*.tmp
+
+# Environment Variables & Secrets (CRITICAL FOR PUBLIC REPOS)
+.env
+.env.local
+.env.*.local
+specs/swarm-config.json
+specs/terminal.log
+
+# Track example configuration as template for new clones
+!specs/swarm-config.example.json
+
+# Build Artifacts & Dependencies (for future generated codebases)
+node_modules/
+dist/
+build/
+.cache/
+coverage/
+
+# Draft Specs
+specs/*/*.draft.md

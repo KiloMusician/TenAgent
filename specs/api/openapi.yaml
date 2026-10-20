@@ -1,0 +1,501 @@
+openapi: 3.0.3
+info:
+  title: Warung POS and Profit Engine API
+  description: Contract-first REST API for product catalog management, cash sales, operational expenses, and profit analytics.
+  version: 1.0.0
+servers:
+  - url: http://localhost:5000/api/v1
+    description: Local Development Server
+
+paths:
+  /products:
+    get:
+      summary: List all products
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of products
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Product'
+    post:
+      summary: Create a new product
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProductRequest'
+      responses:
+        '201':
+          description: Product successfully created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+
+  /products/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: Get product details
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '404':
+          description: Product not found
+    put:
+      summary: Update product pricing and information
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProductRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+    delete:
+      summary: Delete or deactivate product
+      responses:
+        '204':
+          description: Product deleted successfully
+
+  /transactions:
+    get:
+      summary: List transactions
+      parameters:
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TransactionHeader'
+    post:
+      summary: Record a sales transaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTransactionRequest'
+      responses:
+        '201':
+          description: Sale recorded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionDetail'
+
+  /transactions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: Get transaction details with line items
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionDetail'
+
+  /expenses:
+    get:
+      summary: List operational expenses
+      parameters:
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Expense'
+    post:
+      summary: Record an operational expense
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateExpenseRequest'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Expense'
+
+  /expenses/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      summary: Delete an operational expense entry
+      responses:
+        '204':
+          description: Expense entry deleted
+
+  /analytics/summary:
+    get:
+      summary: Get profit summary metrics for a specified period
+      parameters:
+        - name: period
+          in: query
+          description: Quick period filter (today, 3d, 7d, 30d, all)
+          schema:
+            type: string
+            default: today
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfitSummary'
+
+  /analytics/charts:
+    get:
+      summary: Get time-series data for revenue, gross profit, and net profit
+      parameters:
+        - name: period
+          in: query
+          schema:
+            type: string
+            default: 7d
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ChartDataPoint'
+
+components:
+  schemas:
+    Product:
+      type: object
+      required:
+        - id
+        - name
+        - category
+        - costPrice
+        - sellingPrice
+        - unitMargin
+        - marginPercentage
+        - isActive
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: Es Teh Manis
+        category:
+          type: string
+          example: Minuman
+        costPrice:
+          type: number
+          format: double
+          example: 1500.00
+        sellingPrice:
+          type: number
+          format: double
+          example: 4000.00
+        unitMargin:
+          type: number
+          format: double
+          example: 2500.00
+        marginPercentage:
+          type: number
+          format: double
+          example: 62.5
+        isActive:
+          type: boolean
+          example: true
+
+    CreateProductRequest:
+      type: object
+      required:
+        - name
+        - costPrice
+        - sellingPrice
+      properties:
+        name:
+          type: string
+          example: Es Teh Manis
+        category:
+          type: string
+          default: Umum
+          example: Minuman
+        costPrice:
+          type: number
+          format: double
+          minimum: 0
+          example: 1500.00
+        sellingPrice:
+          type: number
+          format: double
+          minimum: 0
+          example: 4000.00
+
+    UpdateProductRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        category:
+          type: string
+        costPrice:
+          type: number
+          format: double
+        sellingPrice:
+          type: number
+          format: double
+        isActive:
+          type: boolean
+
+    CreateTransactionRequest:
+      type: object
+      required:
+        - items
+      properties:
+        paymentMethod:
+          type: string
+          enum: [CASH, QRIS]
+          default: CASH
+        notes:
+          type: string
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required:
+              - productId
+              - quantity
+            properties:
+              productId:
+                type: string
+                format: uuid
+              quantity:
+                type: integer
+                minimum: 1
+                example: 2
+
+    TransactionHeader:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        invoiceNumber:
+          type: string
+        totalRevenue:
+          type: number
+        totalCogs:
+          type: number
+        grossProfit:
+          type: number
+        paymentMethod:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    TransactionDetail:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        invoiceNumber:
+          type: string
+        totalRevenue:
+          type: number
+        totalCogs:
+          type: number
+        grossProfit:
+          type: number
+        paymentMethod:
+          type: string
+        notes:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransactionItem'
+
+    TransactionItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        productName:
+          type: string
+        quantity:
+          type: integer
+        costPrice:
+          type: number
+        sellingPrice:
+          type: number
+        subtotalRevenue:
+          type: number
+        subtotalCogs:
+          type: number
+        subtotalProfit:
+          type: number
+
+    Expense:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        expenseDate:
+          type: string
+          format: date
+        category:
+          type: string
+          example: Kantong & Kemasan
+        amount:
+          type: number
+          example: 15000.00
+        notes:
+          type: string
+          example: Beli kresek dan sedotan
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateExpenseRequest:
+      type: object
+      required:
+        - category
+        - amount
+      properties:
+        expenseDate:
+          type: string
+          format: date
+        category:
+          type: string
+          example: Operasional
+        amount:
+          type: number
+          minimum: 1
+          example: 25000.00
+        notes:
+          type: string
+
+    ProfitSummary:
+      type: object
+      properties:
+        period:
+          type: string
+          example: 7d
+        totalRevenue:
+          type: number
+          example: 1500000.00
+        totalCogs:
+          type: number
+          example: 850000.00
+        grossProfit:
+          type: number
+          example: 650000.00
+        totalExpenses:
+          type: number
+          example: 120000.00
+        netProfit:
+          type: number
+          example: 530000.00
+        grossMarginPercent:
+          type: number
+          example: 43.3
+        netMarginPercent:
+          type: number
+          example: 35.3
+        totalCustomers:
+          type: integer
+          example: 45
+
+    ChartDataPoint:
+      type: object
+      properties:
+        date:
+          type: string
+          example: 2026-10-18
+        revenue:
+          type: number
+          example: 250000.00
+        grossProfit:
+          type: number
+          example: 110000.00
+        expenses:
+          type: number
+          example: 20000.00
+        netProfit:
+          type: number
+          example: 90000.00
+        customerCount:
+          type: integer
+          example: 12

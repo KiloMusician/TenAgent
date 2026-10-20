@@ -1,0 +1,108 @@
+{
+  "project": {
+    "name": "TenAgent Swarm Workspace",
+    "version": "1.0.0",
+    "phase": "Phase 1: Discovery & Requirements",
+    "overallProgress": 0,
+    "lastUpdated": "2026-10-20T00:00:00Z"
+  },
+  "agents": [
+    {
+      "id": "01_pm",
+      "role": "Product Manager",
+      "status": "IDLE",
+      "currentTask": "Standing by for founder prompt / discovery kickoff.",
+      "processDetail": "Ready to conduct discovery interview: clarify target users, core business problem, and MVP user stories.",
+      "progress": 0,
+      "deliverable": "specs/prd/FEATURE_NAME.md"
+    },
+    {
+      "id": "02_arch",
+      "role": "System Architect",
+      "status": "WAITING",
+      "currentTask": "Waiting for PRD feature list to consult tech stack & architecture layers.",
+      "processDetail": "Standby to prepare ADR-001 (Clean Architecture layers & boundaries).",
+      "progress": 0,
+      "deliverable": "specs/architecture/layers.md"
+    },
+    {
+      "id": "03_designer",
+      "role": "UI/UX Designer",
+      "status": "WAITING",
+      "currentTask": "Waiting for PRD to design user flows and UI tokens.",
+      "processDetail": "Standby to enforce anti-slop guidelines and design tokens.",
+      "progress": 0,
+      "deliverable": "specs/design/screen-flows.md"
+    },
+    {
+      "id": "04_dba",
+      "role": "Database Engineer",
+      "status": "WAITING",
+      "currentTask": "Waiting for architecture schema boundary definition.",
+      "processDetail": "Standby to design 3NF relational schema and enforce zero duplicate tables.",
+      "progress": 0,
+      "deliverable": "specs/database/schema.sql"
+    },
+    {
+      "id": "05_backend",
+      "role": "Backend Engineer",
+      "status": "WAITING",
+      "currentTask": "Waiting for OpenAPI contract and database schema lock.",
+      "processDetail": "Standby to build domain use cases strictly adhering to OpenAPI contract.",
+      "progress": 0,
+      "deliverable": "backend/src/"
+    },
+    {
+      "id": "06_client",
+      "role": "Client Engineer",
+      "status": "WAITING",
+      "currentTask": "Waiting for design specs and OpenAPI contract.",
+      "processDetail": "Standby for concurrent mobile/web client development.",
+      "progress": 0,
+      "deliverable": "frontend/src/"
+    },
+    {
+      "id": "07_qa",
+      "role": "QA Engineer",
+      "status": "IDLE",
+      "currentTask": "Standby: Will write test matrix from acceptance criteria.",
+      "processDetail": "Waiting for backend/client code implementations.",
+      "progress": 0,
+      "deliverable": "specs/qa/test-matrix.md"
+    },
+    {
+      "id": "08_security",
+      "role": "Security Engineer",
+      "status": "IDLE",
+      "currentTask": "Standby: Will audit codebase against OWASP Top 10.",
+      "processDetail": "Waiting for architecture and auth implementation to conduct security audit.",
+      "progress": 0,
+      "deliverable": "specs/security/audit-report.md"
+    },
+    {
+      "id": "09_devops",
+      "role": "DevOps Engineer",
+      "status": "IDLE",
+      "currentTask": "Standby: Multi-stage Docker template ready.",
+      "processDetail": "Waiting for backend dependency tree finalization to configure compose services.",
+      "progress": 0,
+      "deliverable": "Dockerfile"
+    },
+    {
+      "id": "10_tech_lead",
+      "role": "Technical Lead",
+      "status": "IDLE",
+      "currentTask": "Standby: Gatekeeper audit of deliverables.",
+      "processDetail": "Standing by to review pull requests and verify 6 Quality Gates.",
+      "progress": 0,
+      "deliverable": "specs/reviews/signoff.md"
+    }
+  ],
+  "logs": [
+    {
+      "timestamp": "00:00:00",
+      "agent": "system",
+      "message": "[TenAgent] Swarm initialized. All 10 engineering roles standing by."
+    }
+  ]
+}
