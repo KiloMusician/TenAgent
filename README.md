@@ -118,9 +118,9 @@ flowchart TD
 
 ## Key Capabilities
 
-### 1. 2D Virtual Office Monitor (`dashboard/`)
+### 1. Virtual Office Monitor (`dashboard/`)
 TenAgent includes a zero-dependency, ultra-lightweight web dashboard running on port `7777`:
-* **Zero GPU Lag**: Built entirely with pure semantic HTML5, CSS3, and responsive SVGs (under 60KB total). No bulky canvas or heavy WebGL dependencies.
+* **Zero Lag**: Built entirely with pure semantic HTML5, CSS3, and responsive SVGs (under 60KB total). No bulky canvas or heavy WebGL dependencies.
 * **Live Process Inspection**: Click on any desk or roster card to open the **Engineer Dossier Modal** with persona traits, domain mandates, and deliverables.
 * **Micro-Step Synchronizer**: Accurately reflects CLI activity, file changes, and sub-second log streams without fake work animations.
 * **Strict Port Isolation**: Dashboard runs on dedicated port `7777` (with auto-range up to `7827`), ensuring zero collision with project development servers (ports `3000`, `5173`, `4000`, `8000`).
