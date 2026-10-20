@@ -148,8 +148,8 @@ TenAgent integrates the `.agents/skills/antislop*` hygiene guidelines:
 
 ### Step 1: Clone Repository
 ```bash
-git clone https://github.com/your-username/tenagent.git my-project
-cd my-project
+git clone https://github.com/yoepan/tenagent.git
+cd tenagent
 ```
 
 ### Step 2: Launch Virtual Office Dashboard
