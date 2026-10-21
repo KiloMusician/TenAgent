@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-10-Agent Swarm Project Initializer
+10-Agent Swarm Project Initializer (v1.0.1)
 Installs and bootstraps the 10-Agent Swarm framework into any new project folder.
 
 Usage:

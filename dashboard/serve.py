@@ -1428,7 +1428,7 @@ def main():
         if port != DEFAULT_PORT:
             print(f"[TenAgent] Port {DEFAULT_PORT} is in use (by another project or dev server).")
             print(f"[TenAgent] Automatically switched to available port: {port}")
-        print(f"TenAgent Virtual Office Running at: {url}")
+        print(f"TenAgent Virtual Office v1.0.1 Running at: {url}")
         print(f"Serving live specs from: {DIRECTORY}")
         print(f"Press Ctrl+C to stop the server.")
         print(f"=======================================================\n")

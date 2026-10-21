@@ -3,7 +3,7 @@ name: swarm
 description: "Autonomous Multi-Brain 10-Agent Swarm: Orchestrates connected AI providers (9Router, Groq, Gemini, DeepSeek, Claude, OpenAI, Ollama) to debate, generate contract-first specifications, and build software collaboratively."
 allowed-tools: run_command read_file write_file edit_file
 ---
-# TenAgent Multi-Brain Swarm Orchestrator
+# TenAgent Multi-Brain Swarm Orchestrator (v1.0.1)
 
 This skill defines the autonomous multi-brain collaborative execution protocol for the TenAgent Engineering Swarm.
 

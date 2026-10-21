@@ -1,4 +1,4 @@
-# 10-Agent Engineering Swarm Workspace
+# 10-Agent Engineering Swarm Workspace (v1.0.1)
 
 This repository operates as an autonomous, contract-first engineering workspace governed by **10 Specialized Engineer Agents**. It is designed to take any software project from concept to production with zero architectural drift, minimal context pollution, and clean, crafted code.
 

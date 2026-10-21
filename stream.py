@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TenAgent Terminal Stream Runner & Logger (Solusi 2)
+TenAgent Terminal Stream Runner & Logger (v1.0.1)
 Pipes live CLI execution output directly to the TenAgent Virtual Office Monitor
 in real-time (sub-second streaming).
 

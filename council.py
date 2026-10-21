@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TenAgent Autonomous Dynamic Multi-AI Council & Debate Engine
+TenAgent Autonomous Dynamic Multi-AI Council & Debate Engine (v1.0.1)
 Coordinates real-time multi-model debates and peer consultations
 among any connected AI providers (Groq, Gemini, DeepSeek, Claude, OpenAI, etc.).
 """

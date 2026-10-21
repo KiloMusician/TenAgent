@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TenAgent Multi-Brain Collaborative Swarm Pipeline
+TenAgent Multi-Brain Collaborative Swarm Pipeline (v1.0.1)
 Coordinates the 10 specialized engineering agents by dynamically distributing
 workloads across all connected AI provider brains (9Router, Groq, Gemini, DeepSeek, etc.).
 """
