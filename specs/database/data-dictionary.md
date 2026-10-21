@@ -8,17 +8,11 @@
 
 | Table Name | Entity Concept | Primary Key | Critical Foreign Keys | Owner Domain | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `products` | Product catalog with unit cost & selling price | `id` (UUID) | None | Catalog | Active |
-| `transactions` | Point of sale checkout header records | `id` (UUID) | None | Sales | Active |
-| `transaction_items` | Individual line items within a sales transaction | `id` (UUID) | `transaction_id -> transactions.id`, `product_id -> products.id` | Sales | Active |
-| `expenses` | Daily operational overheads (rent, power, bags) | `id` (UUID) | None | Accounting | Active |
+| *(None yet)* | *(Awaiting Project Discovery)* | - | - | - | Initialized |
 
 ---
 
 ## Entity Relationship Guidelines
-1. **Single Source of Truth (SSOT)**: 
-   - `products` is the authoritative source for catalog pricing.
-   - Historical item sales freeze their respective `cost_price` and `selling_price` inside `transaction_items` so future catalog price changes never corrupt past financial reports.
-2. **Naming Conventions**: Table names are lowercase `snake_case` in plural form (`products`, `transactions`, `transaction_items`, `expenses`).
-3. **Audit Trail**: Every mutable table requires `created_at` and `updated_at` timestamps with timezone.
-4. **Numeric Precision**: Currency fields use `NUMERIC(15,2)` to prevent floating-point rounding discrepancies.
+1. **Single Source of Truth (SSOT)**: If an entity already exists (e.g., `users`), all user-related data must link directly to this table rather than creating secondary identity stores.
+2. **Naming Conventions**: Table names are lowercase `snake_case` in plural form (e.g., `orders`, `user_sessions`, `payment_intents`).
+3. **Audit Trail**: Every mutable table requires `created_at` and `updated_at` timestamp with timezone.

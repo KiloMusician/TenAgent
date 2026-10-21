@@ -64,6 +64,12 @@ PROVIDER_PROFILES = {
         "role": "Local Privacy & Offline Auditor",
         "tag": "ollama_local",
         "style": "Lightweight, privacy-focused, zero-leak review."
+    },
+    "9router": {
+        "name": "9Router (Gateway)",
+        "role": "Full-Stack System Architect",
+        "tag": "9router_architect",
+        "style": "Pragmatic, clean architectural layering, robust API contract design."
     }
 }
 
@@ -90,11 +96,15 @@ def get_active_providers(root_dir: str = None) -> list:
         for p in providers:
             p_id = (p.get("provider") or "").lower().strip()
             key = (p.get("key") or "").strip()
+            b_url = (p.get("baseUrl") or p.get("base_url") or "").strip()
+            model = p.get("model") or ("ag/gemini-3.8-flash" if "9router" in p_id else "")
             # Must have key and not marked invalid
             if key and p.get("status") != "invalid_key" and p.get("valid") is not False:
                 active.append({
                     "id": p_id,
                     "key": key,
+                    "baseUrl": b_url,
+                    "model": model,
                     "name": p.get("name") or PROVIDER_PROFILES.get(p_id, {}).get("name", p_id.upper()),
                     "profile": PROVIDER_PROFILES.get(p_id, {
                         "name": p_id.upper(),
@@ -127,7 +137,7 @@ def log_council_message(tag: str, message: str, root_dir: str = None):
     except Exception:
         pass
 
-def call_llm(provider: dict, system_prompt: str, user_prompt: str, timeout: int = 25) -> str:
+def call_llm(provider: dict, system_prompt: str, user_prompt: str, timeout: int = 75) -> str:
     """Dispatches prompt to any supported LLM provider using pure Python standard library."""
     p_id = provider["id"]
     key = provider["key"]
@@ -195,6 +205,16 @@ def call_llm(provider: dict, system_prompt: str, user_prompt: str, timeout: int 
         if "groq" in p_id:
             endpoint = "https://api.groq.com/openai/v1/chat/completions"
             models = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile"]
+        elif "9router" in p_id or provider.get("baseUrl"):
+            target = provider.get("baseUrl") or "http://localhost:20128/v1"
+            target = target.rstrip("/")
+            if target.endswith("/v1"):
+                endpoint = f"{target}/chat/completions"
+            elif "/chat/completions" not in target:
+                endpoint = f"{target}/v1/chat/completions"
+            else:
+                endpoint = target
+            models = [provider.get("model") or "ag/gemini-3.8-flash", "ag/gemini-2.5-flash", "gpt-4o-mini"]
         elif "deepseek" in p_id:
             endpoint = "https://api.deepseek.com/v1/chat/completions"
             models = ["deepseek-chat"]
@@ -219,17 +239,39 @@ def call_llm(provider: dict, system_prompt: str, user_prompt: str, timeout: int 
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
-                    "max_tokens": 600,
-                    "temperature": 0.7
+                    "max_tokens": 1200,
+                    "temperature": 0.7,
+                    "stream": False
                 }
                 req = urllib.request.Request(endpoint, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    choices = data.get("choices", [])
-                    if choices:
-                        res_text = choices[0].get("message", {}).get("content", "").strip()
-                        if res_text:
-                            return res_text
+                    raw_resp = resp.read().decode("utf-8").strip()
+                    if raw_resp.startswith("data:"):
+                        text_chunks = []
+                        for line in raw_resp.split("\n"):
+                            line_s = line.strip()
+                            if line_s.startswith("data:"):
+                                line_json = line_s[5:].strip()
+                                if line_json and line_json != "[DONE]":
+                                    try:
+                                        c_data = json.loads(line_json)
+                                        delta = c_data.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                                        if delta:
+                                            text_chunks.append(delta)
+                                    except Exception:
+                                        pass
+                        if text_chunks:
+                            return "".join(text_chunks).strip()
+
+                    try:
+                        data = json.loads(raw_resp)
+                        choices = data.get("choices", [])
+                        if choices:
+                            res_text = choices[0].get("message", {}).get("content", "").strip()
+                            if res_text:
+                                return res_text
+                    except Exception:
+                        pass
             except urllib.error.HTTPError as e:
                 if e.code == 404:
                     continue

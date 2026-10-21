@@ -33,6 +33,7 @@ def bootstrap_new_project(target_dir):
         "council.py",
         "stream.py",
         "stream.bat",
+        "swarm_pipeline.py",
         "favicon.ico",
         "LICENSE",
         ".gitignore"

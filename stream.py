@@ -299,6 +299,16 @@ def main():
             print(f"[council_error] Failed to run council debate: {e}")
         return
 
+    # Subcommand: swarm / build
+    if subcmd in ("swarm", "build"):
+        goal = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else "Full-Stack System MVP"
+        try:
+            import swarm_pipeline
+            swarm_pipeline.execute_multi_brain_swarm(goal, ROOT_DIR)
+        except Exception as e:
+            print(f"[swarm_error] Swarm execution failed: {e}")
+        return
+
     # Subcommand: shell
     if subcmd == "shell":
         agent = sys.argv[2] if len(sys.argv) > 2 else None

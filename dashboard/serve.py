@@ -7,6 +7,7 @@ Usage: python dashboard/serve.py
 
 import http.server
 import socketserver
+import socket
 import webbrowser
 import os
 import sys
@@ -61,6 +62,15 @@ def append_to_terminal_log(agent: str, text: str):
         return
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"[{ts}] [{agent}] {clean}\n")
+
+def safe_write_json(filepath: str, data: dict):
+    try:
+        tmp_path = filepath + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, filepath)
+    except Exception:
+        pass
 
 def set_agent_status_direct(agent_id: str, status: str, process_detail: str, progress: int = None):
     try:
@@ -157,9 +167,10 @@ def run_agy_prompt(prompt: str, root_dir: str):
 
     threading.Thread(target=worker, daemon=True).start()
 
-def verify_ai_provider_key(provider_id: str, key: str) -> dict:
+def verify_ai_provider_key(provider_id: str, key: str, base_url: str = "") -> dict:
     p_id = (provider_id or "").lower().strip()
     k = (key or "").strip()
+    b_url = (base_url or "").strip()
     if not k:
         return {"status": "empty", "valid": False, "statusDetail": "Empty Key"}
     
@@ -207,6 +218,20 @@ def verify_ai_provider_key(provider_id: str, key: str) -> dict:
             with urllib.request.urlopen(req, timeout=3) as resp:
                 if resp.status == 200:
                     return {"status": "active", "valid": True, "statusDetail": "Active (Local)"}
+        elif "9router" in p_id or b_url:
+            target = b_url if b_url else "http://localhost:20128/v1"
+            target = target.rstrip("/")
+            if target.endswith("/v1"):
+                url = f"{target}/models"
+            elif "/models" in target:
+                url = target
+            else:
+                url = f"{target}/v1/models"
+            headers["Authorization"] = f"Bearer {k}"
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status in (200, 201):
+                    return {"status": "active", "valid": True, "statusDetail": "Active"}
         else:
             url = "https://api.openai.com/v1/models"
             headers["Authorization"] = f"Bearer {k}"
@@ -223,6 +248,8 @@ def verify_ai_provider_key(provider_id: str, key: str) -> dict:
     except Exception:
         if "ollama" in p_id:
             return {"status": "connection_error", "valid": False, "statusDetail": "Ollama Offline"}
+        if "9router" in p_id or b_url:
+            return {"status": "connection_error", "valid": False, "statusDetail": "Connection Failed"}
         return {"status": "connection_error", "valid": False, "statusDetail": "Connection Failed"}
         
     return {"status": "invalid_key", "valid": False, "statusDetail": "Invalid Key"}
@@ -382,6 +409,96 @@ def get_cached_cli_status(root_dir: str) -> dict:
     _cli_cache["time"] = time.time()
     return data
 
+def update_provider_runtime_status(provider_id: str, status: str, status_detail: str, valid: bool = None):
+    try:
+        cfg_file = os.path.join(SPECS_DIR, "swarm-config.json")
+        if not os.path.exists(cfg_file):
+            return
+        with open(cfg_file, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        changed = False
+        p_target = provider_id.lower().strip()
+        for p in cfg.get("providers", []):
+            cur_p = (p.get("provider") or "").lower().strip()
+            if cur_p == p_target or (cur_p in p_target) or (p_target in cur_p):
+                if p.get("status") != status:
+                    p["status"] = status
+                    p["statusDetail"] = status_detail
+                    if valid is not None:
+                        p["valid"] = valid
+                    changed = True
+                break
+        if changed:
+            safe_write_json(cfg_file, cfg)
+    except Exception:
+        pass
+
+def probe_and_update_local_provider(p: dict) -> bool:
+    """Probes a local provider (e.g. 9Router or Ollama) via TCP socket and syncs status. Returns True if changed."""
+    p_id = (p.get("provider") or "").lower().strip()
+    b_url = (p.get("baseUrl") or p.get("base_url") or "").strip()
+    is_local = "9router" in p_id or "ollama" in p_id or "localhost" in b_url or "127.0.0.1" in b_url
+    if not is_local:
+        return False
+
+    host = "127.0.0.1"
+    port = 20128 if "9router" in p_id else (11434 if "ollama" in p_id else 8000)
+    if b_url:
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(b_url if "://" in b_url else f"http://{b_url}")
+            if parsed.hostname:
+                host = parsed.hostname
+            if parsed.port:
+                port = parsed.port
+        except Exception:
+            pass
+
+    is_alive = False
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.25)
+            probe.connect((host, port))
+            is_alive = True
+    except OSError:
+        is_alive = False
+
+    changed = False
+    if is_alive:
+        if p.get("status") != "active" and p.get("status") != "invalid_key":
+            p["status"] = "active"
+            p["statusDetail"] = "Active"
+            p["valid"] = True
+            changed = True
+    else:
+        if p.get("status") != "connection_error":
+            p["status"] = "connection_error"
+            p["statusDetail"] = "Offline"
+            p["valid"] = False
+            changed = True
+    return changed
+
+def local_providers_probe_worker(root_dir: str):
+    cfg_file = os.path.join(root_dir, "specs", "swarm-config.json")
+    while True:
+        try:
+            time.sleep(2.5)
+            if not os.path.exists(cfg_file):
+                continue
+            with open(cfg_file, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+
+            providers = cfg.get("providers", [])
+            changed = False
+            for p in providers:
+                if probe_and_update_local_provider(p):
+                    changed = True
+
+            if changed:
+                safe_write_json(cfg_file, cfg)
+        except Exception:
+            pass
+
 def call_custom_ai_provider(prompt: str, providers: list, root_dir: str):
     def worker():
         valid_providers = [p for p in providers if p.get("valid") is not False and p.get("status") != "invalid_key"]
@@ -420,12 +537,16 @@ def call_custom_ai_provider(prompt: str, providers: list, root_dir: str):
                                     line_clean = line.strip()
                                     if line_clean:
                                         append_to_terminal_log("01_pm", line_clean)
+                                update_provider_runtime_status(p_id, "active", "Active", True)
                                 success = True
                                 break
                 except urllib.error.HTTPError as e:
                     err_msg = f"HTTP {e.code}"
                     if e.code == 429:
                         err_msg += " (Rate limit exceeded)"
+                        update_provider_runtime_status(p_id, "rate_limited", "Rate Limited", False)
+                    elif e.code in (401, 402, 403):
+                        update_provider_runtime_status(p_id, "invalid_key", "Invalid Key", False)
                     append_to_terminal_log("system", f"{name} error: {err_msg}. Rotating to next provider...")
                 except Exception as e:
                     append_to_terminal_log("system", f"{name} error: {str(e)}. Rotating to next provider...")
@@ -441,6 +562,18 @@ def call_custom_ai_provider(prompt: str, providers: list, root_dir: str):
                 elif "ollama" in p_id:
                     endpoint = "http://localhost:11434/v1/chat/completions"
                     model = "llama3"
+                elif "9router" in p_id or p_entry.get("base_url") or p_entry.get("baseUrl"):
+                    b_url = (p_entry.get("base_url") or p_entry.get("baseUrl") or "").strip()
+                    if not b_url and "9router" in p_id:
+                        b_url = "http://localhost:20128/v1"
+                    b_url = b_url.rstrip("/")
+                    if b_url.endswith("/v1"):
+                        endpoint = f"{b_url}/chat/completions"
+                    elif "/chat/completions" in b_url:
+                        endpoint = b_url
+                    else:
+                        endpoint = f"{b_url}/v1/chat/completions"
+                    model = p_entry.get("model") or "gpt-4o-mini"
 
                 try:
                     headers = {
@@ -465,12 +598,16 @@ def call_custom_ai_provider(prompt: str, providers: list, root_dir: str):
                                 line_clean = line.strip()
                                 if line_clean:
                                     append_to_terminal_log("01_pm", line_clean)
+                            update_provider_runtime_status(p_id, "active", "Active", True)
                             success = True
                             break
                 except urllib.error.HTTPError as e:
                     err_msg = f"HTTP {e.code}"
                     if e.code == 429:
                         err_msg += " (Rate limit exceeded)"
+                        update_provider_runtime_status(p_id, "rate_limited", "Rate Limited", False)
+                    elif e.code in (401, 402, 403):
+                        update_provider_runtime_status(p_id, "invalid_key", "Invalid Key", False)
                     append_to_terminal_log("system", f"{name} error: {err_msg}. Rotating to next provider...")
                 except Exception as e:
                     append_to_terminal_log("system", f"{name} error: {str(e)}. Rotating to next provider...")
@@ -1010,10 +1147,15 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                         saved = json.load(f)
                         cfg.update(saved)
                         if "providers" in cfg:
+                            probe_changed = False
                             for p in cfg["providers"]:
+                                if probe_and_update_local_provider(p):
+                                    probe_changed = True
                                 k = p.get("key", "")
                                 if k:
                                     p["key_masked"] = k[:4] + "..." + k[-4:] if len(k) > 8 else "***"
+                            if probe_changed:
+                                safe_write_json(cfg_file, cfg)
                 except Exception:
                     pass
             cfg["cli"] = get_cached_cli_status(DIRECTORY)
@@ -1052,12 +1194,17 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 def validate_single_provider(p_entry):
                     p_id = (p_entry.get("provider") or "").strip()
                     k = (p_entry.get("key") or "").strip()
+                    b_url = (p_entry.get("baseUrl") or p_entry.get("base_url") or "").strip()
                     if ("..." in k or k == "***") and p_id in existing_keys:
                         k = existing_keys[p_id]
                         p_entry["key"] = k
                     
+                    if b_url:
+                        p_entry["baseUrl"] = b_url
+                        p_entry["base_url"] = b_url
+                    
                     if k:
-                        ver = verify_ai_provider_key(p_id, k)
+                        ver = verify_ai_provider_key(p_id, k, base_url=b_url)
                         p_entry["status"] = ver["status"]
                         p_entry["valid"] = ver["valid"]
                         p_entry["statusDetail"] = ver["statusDetail"]
@@ -1144,18 +1291,13 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 else:
                     active_p = [p for p in providers if p.get("valid") is not False and p.get("status") != "invalid_key" and p.get("key")]
                     if active_p:
-                        # Auto-trigger council debate across all active AI keys
                         try:
-                            import council
-                            threading.Thread(target=council.run_council_debate, args=(cmd, DIRECTORY), daemon=True).start()
-                        except Exception:
-                            pass
-
-                    if engine_mode == "native" or not active_p:
-                        run_agy_prompt(cmd, DIRECTORY)
+                            import swarm_pipeline
+                            swarm_pipeline.start_swarm_pipeline_thread(cmd, DIRECTORY)
+                        except Exception as e:
+                            append_to_terminal_log("system", f"Swarm execution error: {str(e)}")
                     else:
-                        # If custom mode without agy fallback, call_custom_ai_provider
-                        call_custom_ai_provider(cmd, providers, DIRECTORY)
+                        run_agy_prompt(cmd, DIRECTORY)
                 
                 self.send_json_response({"ok": True})
                 return
@@ -1216,8 +1358,16 @@ import socket
 BaseServerClass = getattr(http.server, "ThreadingHTTPServer", socketserver.ThreadingTCPServer)
 
 class ThreadedSwarmServer(BaseServerClass):
-    allow_reuse_address = True
+    allow_reuse_address = False if sys.platform == 'win32' else True
     daemon_threads = True
+
+    def server_bind(self):
+        if sys.platform == 'win32' and hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            except OSError:
+                pass
+        super().server_bind()
 
     def handle_error(self, request, client_address):
         exc_type, exc_val, _ = sys.exc_info()
@@ -1229,9 +1379,20 @@ class ThreadedSwarmServer(BaseServerClass):
         super().handle_error(request, client_address)
 
 def is_port_available(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.2)
+        try:
+            probe.connect(('127.0.0.1', port))
+            return False
+        except OSError:
+            pass
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if sys.platform != 'win32':
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            elif hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             s.bind(('', port))
             return True
         except OSError:
@@ -1255,6 +1416,10 @@ def main():
     # Start background CLI detection worker
     t_cli = threading.Thread(target=cli_status_background_worker, args=(DIRECTORY,), daemon=True)
     t_cli.start()
+
+    # Start background local provider probe worker (zero cloud cost)
+    t_probe = threading.Thread(target=local_providers_probe_worker, args=(DIRECTORY,), daemon=True)
+    t_probe.start()
 
     httpd, port = start_server_with_auto_port(DEFAULT_PORT, MAX_PORT_ATTEMPTS)
     with httpd:

@@ -104,31 +104,47 @@ When interacting with the user/founder:
 
 ---
 
-## 5. Master-Prompt Auto-Decomposition Protocol (Role-Split Execution)
+## 5. Master-Prompt Auto-Execution Protocol (Multi-Brain Swarm Pipeline)
 
-When the user provides a single master request (e.g. *"Build an automated store POS system with offline inventory and receipt printing"*):
-1. **Phase 0: Kickoff Discovery Interview**: PM & Architect ask the 5 discovery questions. The user provides answers and signs off on the boundaries.
-2. **Never Monolithic Dump**: The AI CLI must NOT attempt to generate all layers in a single untracked generation.
-3. **Autonomous Sub-Task Splitting**: The AI automatically executes sequentially according to the Workflow Lifecycle:
-   - **Step 1 (Role 01 PM)**: Formulate User Stories & Acceptance Criteria -> write `specs/prd/`. Log: `[01_pm] PRD generated.` Update status to `REVIEWING` (100%).
-   - **Step 2 (Role 02 Architect)**: Read PRD -> select tech stack & Clean Architecture layer boundaries -> write `specs/architecture/adr-001...`. Log: `[02_arch] Architecture locked.` Update status to `REVIEWING` (100%).
-   - **Step 3 (Role 03 Designer & Role 04 DBA)**:
-     - Designer establishes design tokens & screen flows (`specs/design/screen-flows.md`, `DESIGN.md`).
-     - DBA normalizes 3NF database schema & OpenAPI contract (`specs/database/schema.sql`, `specs/api/openapi.yaml`).
-     - Backend & Client remain in `WAITING` until contracts are finalized.
-   - **Step 4 (Role 05 Backend & Role 06 Client)**:
-     - Backend implements domain use cases, entities, and REST API in `backend/src/`.
-     - Client implements Web/Mobile UI in `mobile/` or `frontend/` adhering strictly to tokens and OpenAPI.
-   - **Step 5 (Role 07 QA & Role 08 Security)**:
-     - QA writes test fixtures and executes real test suites (`stream.py run 07_qa "<cmd>"`).
-     - Security verifies OWASP Top 10 and checks secret zero-leak.
-   - **Step 6 (Role 09 DevOps & Role 10 Tech Lead)**:
-     - DevOps creates `Dockerfile`, compose files, and CI workflows when deployment is required.
-     - Tech Lead performs final gatekeeper audit against the 6 Quality Gates.
-4. **Immediate Step-by-Step Logging & Terminal Streaming**:
-   - At each step transition, agents log progress to `specs/swarm-status.json` and stream live command executions using `python stream.py run <agent_id> "<cmd>"` or `stream.bat "<cmd>"`.
-   - Single-line status or thought logs can be piped directly via `python stream.py log <agent_id> "<message>"`.
-   - This streams stdout/stderr second-by-second into `specs/terminal.log`, updating the Virtual Office Monitor's per-agent terminal box and bottom CLI ticker in real time.
+Whenever the user prompts the AI CLI (`agy`) to create, scaffold, or develop a project, feature, or major module:
+
+1. **MANDATORY AUTOMATIC SWARM INVOCATION**:
+   The AI CLI (`agy`) operates as the **Swarm Conductor**. The AI CLI **MUST NOT** attempt to generate all layers or specifications alone in its single prompt context.
+   Instead, the AI CLI **MUST IMMEDIATELY** execute the multi-brain collaborative pipeline as its very first tool call:
+   ```powershell
+   python swarm_pipeline.py "<user_prompt>"
+   ```
+   *(or `python stream.py swarm "<user_prompt>"`)*
+
+   **What this command automatically does**:
+   - Reads `specs/swarm-config.json` and engages all active AI provider brains (9Router at `localhost:20128`, Groq, Gemini, DeepSeek, Claude, OpenAI, Ollama).
+   - If multiple AI keys are connected: runs the **Pre-Flight Multi-AI Council Debate** where connected models dynamically split roles (e.g., Groq stress-tests edge cases and 9Router/Gemini solves them), streaming every argument live to `specs/terminal.log`.
+   - Distributes the 10 engineering roles across the active AI models:
+     * **01_pm**: Formulates PRD & User Stories (`specs/prd/user-stories.md`).
+     * **02_arch**: Locks Clean Architecture boundaries (`specs/architecture/adr-001.md`).
+     * **04_dba**: Generates 3NF Database Schema (`specs/database/schema.sql`).
+     * **05_backend**: Generates OpenAPI 3.0 Contract (`specs/api/openapi.yaml`) and backend service stub.
+     * **07_qa**: Establishes Test Matrix (`specs/qa/test-matrix.md`).
+     * **08_security**: Produces OWASP Audit Report (`specs/security/audit-report.md`).
+     * **10_tech_lead**: Evaluates Quality Gates & Final Signoff (`specs/signoff.md`).
+   - Updates `specs/swarm-status.json` and streams live logs to the TenAgent Virtual Office Dashboard in real time.
+
+2. **Post-Pipeline Code Implementation & Verification**:
+   After `python swarm_pipeline.py` finishes:
+   - The AI CLI reads the locked specifications from `specs/`.
+   - The AI CLI assists the client engineer and backend engineer in completing application source code (`backend/`, `frontend/`, or `mobile/`) adhering 100% strictly to `specs/database/schema.sql` and `specs/api/openapi.yaml`.
+   - The AI CLI executes real test suites using the stream runner:
+     ```powershell
+     python stream.py run 07_qa "npm test" # (or pytest / cargo test)
+     ```
+   - Terminal outputs and test results stream directly into the Virtual Office Monitor.
+
+3. **Ad-Hoc Peer Debate & Consultation**:
+   Whenever the user asks a design question or requests an architectural debate:
+   ```powershell
+   python stream.py council "<topic>"
+   ```
+   The active brains debate live, and the AI CLI reports the consensus back to the user.
 
 ---
 
