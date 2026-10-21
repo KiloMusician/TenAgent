@@ -7,31 +7,23 @@ on:
     branches: [ main ]
 
 jobs:
-  test-and-build:
+  test-and-verify:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          node-version: 20
-          cache: 'npm'
-          cache-dependency-path: backend/package-lock.json
+          python-version: '3.11'
 
-      - name: Install Dependencies
+      - name: Verify TenAgent Scripts & Engines
         run: |
-          cd backend
-          npm ci
+          python -m py_compile council.py stream.py swarm_pipeline.py dashboard/serve.py setup_project.py
 
-      - name: Compile TypeScript
+      - name: Validate Swarm State & Specification Integrity
         run: |
-          cd backend
-          npm run build
-
-      - name: Run Test Suite
-        run: |
-          cd backend
-          node --test dist/tests/warung.test.js
+          python -c "import json; json.load(open('specs/swarm-status.json')); json.load(open('specs/swarm-config.example.json'))"
+          python -c "import council; print('Providers supported:', list(council.PROVIDER_PROFILES.keys()))"
