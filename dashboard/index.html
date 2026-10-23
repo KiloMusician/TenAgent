@@ -4099,7 +4099,10 @@
       if (!container) return;
 
       const allProviders = currentEngineConfig.providers || [];
-      const providers = allProviders.filter(p => p && p.key && p.key.trim().length > 0 && p.status !== 'empty');
+      const providers = allProviders.filter(p => {
+        if (!p || p.status === 'empty') return false;
+        return Boolean(p.has_key || (p.key && p.key.trim().length > 0) || (p.key_masked && p.key_masked.trim().length > 0));
+      });
 
       if (countBadge) {
         countBadge.innerText = `${providers.length} Key${providers.length === 1 ? '' : 's'}`;
@@ -4115,7 +4118,7 @@
         const info = normalizeProviderName(p.provider || p.name);
         const isRateLimited = p.rateLimited || p.status === 'rate_limited' || p.status === 'quota_exceeded';
         const isConnError = p.status === 'connection_error' || p.status === 'offline' || (p.statusDetail && p.statusDetail.toLowerCase().includes('offline'));
-        const isInvalid = !isConnError && (p.valid === false || p.status === 'invalid_key' || (p.key && p.key.trim().length < 8));
+        const isInvalid = !isConnError && (p.valid === false || p.status === 'invalid_key' || (p.key && !p.key.includes('...') && p.key.trim().length < 8));
 
         let cardClass = 'ai-provider-card';
         let statusHTML = '';
