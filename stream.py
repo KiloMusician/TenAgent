@@ -201,7 +201,7 @@ def run_command(cmd: str, default_agent: str = None):
             if return_code == 0:
                 update_agent_status(default_agent, f"Completed: {cmd[:40]}", status="REVIEWING")
             else:
-                update_agent_status(default_agent, f"Failed (exit {return_code}): {cmd[:40]}")
+                update_agent_status(default_agent, f"Failed (exit {return_code}): {cmd[:40]}", status="FAILED")
 
         return return_code
     except Exception as e:

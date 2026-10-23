@@ -3461,7 +3461,10 @@
       try {
         const res = await fetch('/api/command', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-TenAgent-Token': window.__TENAGENT_TOKEN__ || ''
+          },
           body: JSON.stringify({ command: cmd })
         });
         await res.json();
@@ -3942,19 +3945,20 @@
             const list = document.getElementById('provider-cards-list');
             if (list) {
               list.innerHTML = '';
-              const providers = (data.providers || []).filter(p => p.key && p.key.trim());
+              const providers = (data.providers || []).filter(p => (p.key && p.key.trim()) || (p.key_masked && p.key_masked.trim()) || p.has_key);
               if (providers.length > 0) {
                 providers.forEach(p => {
                   let st = p.status;
                   let std = p.statusDetail;
-                  if (!st && p.key && p.key.trim().length < 8) {
+                  const displayKey = p.key_masked || p.key || '';
+                  if (!st && p.key && p.key.trim().length < 8 && !p.key.includes('...')) {
                     st = 'invalid_key';
                     std = 'Invalid Key';
                     p.status = st;
                     p.statusDetail = std;
                     p.valid = false;
                   }
-                  addProviderCard(p.provider || 'gemini', p.key || '', p.name || '', st || '', std || '', p.baseUrl || p.base_url || '', p.model || '', p.models || []);
+                  addProviderCard(p.provider || 'gemini', displayKey, p.name || '', st || '', std || '', p.baseUrl || p.base_url || '', p.model || '', p.models || []);
                 });
               } else if (data.api_key && data.api_key.trim()) {
                 addProviderCard(data.provider || 'gemini', data.api_key, '', data.status || '', data.statusDetail || '', data.baseUrl || data.base_url || '', data.model || '', data.models || []);
@@ -4012,11 +4016,13 @@
       });
 
       for (let p of providers) {
-        const clientVer = await verifyProviderClient(p.provider, p.key);
-        if (clientVer) {
-          p.valid = clientVer.valid;
-          p.status = clientVer.status;
-          p.statusDetail = clientVer.statusDetail;
+        if (p.key && !p.key.includes('...') && p.key !== '***') {
+          const clientVer = await verifyProviderClient(p.provider, p.key);
+          if (clientVer) {
+            p.valid = clientVer.valid;
+            p.status = clientVer.status;
+            p.statusDetail = clientVer.statusDetail;
+          }
         }
       }
 
@@ -4249,9 +4255,20 @@
       }
     });
 
+    async function fetchCsrfToken() {
+      try {
+        const res = await fetch('/api/csrf-token');
+        if (res.ok) {
+          const data = await res.json();
+          window.__TENAGENT_TOKEN__ = data.token || '';
+        }
+      } catch (e) {}
+    }
+
     async function initDashboard() {
       updateUI();
       renderConnectedAiProviders();
+      await fetchCsrfToken();
       await Promise.all([pollSwarmStatus(), pollTerminalStream(), loadEngineConfig(true), pollCliStatus()]);
       setInterval(pollTerminalStream, 350); // High-frequency 350ms live stream polling
       setInterval(pollSwarmStatus, 1000);   // 1s swarm status polling

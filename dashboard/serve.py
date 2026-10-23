@@ -11,10 +11,15 @@ import socket
 import webbrowser
 import os
 import sys
+import secrets
+
+_SESSION_TOKEN = secrets.token_hex(24)
 
 DEFAULT_PORT = 7777
 MAX_PORT_ATTEMPTS = 50
 DIRECTORY = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if DIRECTORY not in sys.path:
+    sys.path.insert(0, DIRECTORY)
 
 import json
 import datetime
@@ -1013,24 +1018,8 @@ def handle_file_event(agent_id: str, action_desc: str, root_dir: str):
             updated = False
             for a in data.get("agents", []):
                 if a.get("id") == agent_id:
-                    prev_status = a.get("status", "IDLE")
-                    cur_prog = a.get("progress", 0)
                     a["processDetail"] = action_desc
                     a["status"] = "WORKING"
-                    
-                    # If starting a new task/cycle (was not working or previous task reached completion)
-                    if prev_status != "WORKING" or cur_prog >= 95 or cur_prog == 0:
-                        a["progress"] = 25
-                    else:
-                        # Advance through task milestones based on work
-                        if cur_prog < 45:
-                            a["progress"] = min(90, cur_prog + 15)
-                        elif cur_prog < 70:
-                            a["progress"] = min(92, cur_prog + 10)
-                        elif cur_prog < 88:
-                            a["progress"] = min(94, cur_prog + 5)
-                        else:
-                            a["progress"] = min(95, cur_prog + 1)
                     updated = True
                     break
             if updated:
@@ -1116,42 +1105,27 @@ def start_workspace_watcher(root_dir: str):
                     except Exception:
                         pass
                 
-                # 2. Smooth Realistic Progress Crawler & Universal Cooldown check
+                # 2. Universal state check (Zero fake stopwatch crawler: progress reflects real agent computation)
                 for aid, last_t in list(last_activity_time.items()):
                     elapsed = now - last_t
-                    if elapsed >= 15.0:
+                    # If an agent was in WORKING state for over 120 seconds with no tool activity, return to IDLE without fake 100%
+                    if elapsed >= 120.0:
                         del last_activity_time[aid]
-                        handle_task_completion(aid, root_dir)
-                    else:
-                        # Smooth realistic progress progression from 25% to 92% across active window
-                        target_p = min(92, int(25 + (elapsed / 15.0) * 67))
-                        last_c = last_crawl_time.get(aid, 0)
-                        if now - last_c >= 0.8:
-                            last_crawl_time[aid] = now
-                            if os.path.exists(status_file):
-                                try:
-                                    with open(status_file, "r", encoding="utf-8") as f:
-                                        sdata = json.load(f)
-                                    changed = False
-                                    for a in sdata.get("agents", []):
-                                        if a.get("id") == aid and a.get("status") == "WORKING":
-                                            cur_prog = a.get("progress", 0)
-                                            if target_p > cur_prog:
-                                                a["progress"] = min(94, target_p)
-                                                changed = True
-                                            
-                                            stage_msg = get_role_stage_message(aid, a["progress"])
-                                            if stage_msg and a.get("processDetail") != stage_msg:
-                                                a["processDetail"] = stage_msg
-                                                changed = True
-                                    if changed:
-                                        if "project" in sdata and "agents" in sdata:
-                                            total_p = sum(ag.get("progress", 0) for ag in sdata["agents"])
-                                            sdata["project"]["overallProgress"] = int(total_p / len(sdata["agents"]))
-                                        safe_write_json(status_file, sdata)
-                                        prev_status_mtime = os.path.getmtime(status_file)
-                                except Exception:
-                                    pass
+                        if os.path.exists(status_file):
+                            try:
+                                with open(status_file, "r", encoding="utf-8") as f:
+                                    sdata = json.load(f)
+                                changed = False
+                                for a in sdata.get("agents", []):
+                                    if a.get("id") == aid and a.get("status") == "WORKING":
+                                        a["status"] = "IDLE"
+                                        a["processDetail"] = "Standing by for founder instructions."
+                                        changed = True
+                                if changed:
+                                    safe_write_json(status_file, sdata)
+                                    prev_status_mtime = os.path.getmtime(status_file)
+                            except Exception:
+                                pass
 
                 # 3. Workspace filesystem watcher for all project code and specs
                 for root, dirs, files in os.walk(root_dir):
@@ -1199,10 +1173,14 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
     def end_headers(self):
-        # Enable CORS and disable aggressive caching for live polling
-        self.send_header('Access-Control-Allow-Origin', '*')
+        # Strict CORS: Only allow localhost / 127.0.0.1 origins (Zero Wildcard)
+        origin = self.headers.get('Origin', '') if hasattr(self, 'headers') and self.headers else ''
+        if origin and (origin.startswith('http://localhost:') or origin.startswith('http://127.0.0.1:')):
+            self.send_header('Access-Control-Allow-Origin', origin)
+            self.send_header('Vary', 'Origin')
+            self.send_header('Access-Control-Allow-Credentials', 'true')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-TenAgent-Token')
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
         super().end_headers()
 
@@ -1237,9 +1215,14 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             try:
                 self.send_response(302)
                 self.send_header('Location', '/dashboard/')
+                self.send_header('Set-Cookie', f'tenagent_token={_SESSION_TOKEN}; Path=/; SameSite=Strict')
                 self.end_headers()
             except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
                 pass
+            return
+
+        if clean_path == '/api/csrf-token':
+            self.send_json_response({"token": _SESSION_TOKEN})
             return
 
         if clean_path in ('/favicon.ico', '/dashboard/favicon.ico'):
@@ -1327,14 +1310,34 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                                 if probe_and_update_local_provider(p):
                                     probe_changed = True
                                 k = p.get("key", "")
+                                p["has_key"] = bool(k and k.strip())
                                 if k:
                                     p["key_masked"] = k[:4] + "..." + k[-4:] if len(k) > 8 else "***"
+                                else:
+                                    p["key_masked"] = ""
+                                # CRITICAL SECURITY: Never return plaintext key in HTTP response!
+                                p.pop("key", None)
                             if probe_changed:
                                 safe_write_json(cfg_file, cfg)
                 except Exception:
                     pass
             cfg["cli"] = get_cached_cli_status(DIRECTORY)
             self.send_json_response(cfg)
+            return
+
+        # Whitelist and Path Sanitization (Zero .env, zero config, zero path traversal leak)
+        if '..' in clean_path or '/.' in clean_path or clean_path.startswith('/.'):
+            self.send_error(403, "Access Forbidden: Path traversal or hidden files blocked")
+            return
+
+        lower_path = clean_path.lower()
+        if lower_path.endswith('.env') or 'swarm-config' in lower_path or lower_path.endswith(('.py', '.bat', '.ps1', '.sh', '.git')):
+            self.send_error(403, "Access Forbidden: Protected system resource")
+            return
+
+        allowed_prefixes = ('/dashboard/', '/assets/', '/specs/swarm-status.json', '/specs/terminal.log', '/favicon.')
+        if not any(clean_path.startswith(p) for p in allowed_prefixes) and clean_path not in ('/dashboard', '/'):
+            self.send_error(404, "Not Found")
             return
 
         try:
@@ -1399,7 +1402,14 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 with open(cfg_file, "w", encoding="utf-8") as f:
                     json.dump(payload, f, indent=2)
 
-                self.send_json_response({"ok": True, "config": payload})
+                # CRITICAL SECURITY: Never return raw plaintext keys to client!
+                safe_payload = json.loads(json.dumps(payload))
+                for sp in safe_payload.get("providers", []):
+                    raw_k = sp.pop("key", None)
+                    sp["has_key"] = bool(raw_k and str(raw_k).strip())
+                    sp["key_masked"] = raw_k[:4] + "..." + raw_k[-4:] if raw_k and len(raw_k) > 8 else ("***" if raw_k else "")
+
+                self.send_json_response({"ok": True, "config": safe_payload})
                 return
             except Exception as e:
                 self.send_json_response({"error": str(e)}, 400)
@@ -1433,6 +1443,33 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
         if self.path == '/api/command':
+            # Security Check 1: Must originate from localhost
+            client_ip = self.client_address[0] if hasattr(self, 'client_address') and self.client_address else ''
+            if client_ip not in ('127.0.0.1', '::1', 'localhost'):
+                self.send_json_response({"error": "Forbidden: Remote access denied. TenAgent only accepts commands from localhost."}, 403)
+                return
+
+            # Security Check 2: Block cross-site origins
+            origin = self.headers.get('Origin', '')
+            if origin and not (origin.startswith('http://localhost:') or origin.startswith('http://127.0.0.1:')):
+                self.send_json_response({"error": "Forbidden: Cross-origin request rejected"}, 403)
+                return
+            if self.headers.get('Sec-Fetch-Site') == 'cross-site':
+                self.send_json_response({"error": "Forbidden: Cross-site request rejected"}, 403)
+                return
+
+            # Security Check 3: CSRF Session Token verification
+            req_token = self.headers.get('X-TenAgent-Token', '').strip()
+            if not req_token:
+                cookie_hdr = self.headers.get('Cookie', '')
+                for cookie_part in cookie_hdr.split(';'):
+                    if 'tenagent_token=' in cookie_part:
+                        req_token = cookie_part.split('tenagent_token=')[1].strip()
+                        break
+            if not req_token or req_token != _SESSION_TOKEN:
+                self.send_json_response({"error": "Forbidden: Invalid or missing CSRF session token"}, 403)
+                return
+
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(content_length).decode('utf-8')
@@ -1500,6 +1537,8 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                             swarm_pipeline.start_swarm_pipeline_thread(cmd, DIRECTORY)
                         except Exception as e:
                             append_to_terminal_log("system", f"Swarm execution error: {str(e)}")
+                            self.send_json_response({"ok": False, "error": f"Failed to start pipeline: {str(e)}"}, 500)
+                            return
                     else:
                         run_agy_prompt(cmd, DIRECTORY)
                 
@@ -1597,7 +1636,7 @@ def is_port_available(port: int) -> bool:
                 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             elif hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
                 s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-            s.bind(('', port))
+            s.bind(('127.0.0.1', port))
             return True
         except OSError:
             return False
@@ -1607,7 +1646,7 @@ def start_server_with_auto_port(start_port=DEFAULT_PORT, max_attempts=MAX_PORT_A
         if not is_port_available(port):
             continue
         try:
-            httpd = ThreadedSwarmServer(('', port), SwarmHandler)
+            httpd = ThreadedSwarmServer(('127.0.0.1', port), SwarmHandler)
             return httpd, port
         except OSError:
             continue

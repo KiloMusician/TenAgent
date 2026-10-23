@@ -343,13 +343,16 @@ def run_council_debate(topic: str, root_dir: str = None) -> dict:
     )
     
     critique = ""
+    c_ok = False
     try:
         critique = call_llm(challenger, c_sys, f"Stress test this topic:\n{topic}")
-        for line in critique.split("\n"):
-            if line.strip():
-                log_council_message(c_prof["tag"], line.strip(), root_dir)
+        if critique and critique.strip():
+            c_ok = True
+            for line in critique.split("\n"):
+                if line.strip():
+                    log_council_message(c_prof["tag"], line.strip(), root_dir)
     except Exception as e:
-        log_council_message(c_prof["tag"], f"Challenger {challenger['name']} offline: {str(e)}", root_dir)
+        log_council_message(c_prof["tag"], f"[FAILED] Challenger {challenger['name']} error: {str(e)}", root_dir)
 
     time.sleep(0.5)
 
@@ -362,19 +365,38 @@ def run_council_debate(topic: str, root_dir: str = None) -> dict:
     )
 
     defense = ""
+    d_ok = False
     try:
         defense = call_llm(defender, d_sys, f"Original Goal:\n{topic}\n\nChallenger Critique:\n{critique}")
-        for line in defense.split("\n"):
-            if line.strip():
-                log_council_message(d_prof["tag"], line.strip(), root_dir)
+        if defense and defense.strip():
+            d_ok = True
+            for line in defense.split("\n"):
+                if line.strip():
+                    log_council_message(d_prof["tag"], line.strip(), root_dir)
     except Exception as e:
-        log_council_message(d_prof["tag"], f"Defender {defender['name']} offline: {str(e)}", root_dir)
+        log_council_message(d_prof["tag"], f"[FAILED] Defender {defender['name']} error: {str(e)}", root_dir)
 
-    # --- SYNTHESIS / VERDICT ---
-    verdict = (
-        f"Council Consensus reached between {challenger['name']} and {defender['name']}. "
-        "Key edge cases mitigated. Proceeding to execution."
-    )
+    # --- SYNTHESIS / VERDICT (No Fake Consensus) ---
+    if not c_ok and not d_ok:
+        err_msg = f"Council Debate FAILED: Both {challenger['name']} and {defender['name']} failed to respond."
+        log_council_message("council_verdict", f"[FATAL ERROR] {err_msg}", root_dir)
+        log_council_message("council", "=== Council Session Aborted due to provider errors. ===", root_dir)
+        return {
+            "status": "failed",
+            "error": err_msg,
+            "consensus": None
+        }
+
+    if c_ok and d_ok:
+        verdict = (
+            f"Council Consensus reached between {challenger['name']} and {defender['name']}. "
+            "Key edge cases mitigated. Proceeding to execution."
+        )
+    elif d_ok:
+        verdict = f"Council partial consensus: {defender['name']} formulated architectural mitigations (Challenger was offline)."
+    else:
+        verdict = f"Council partial consensus: {challenger['name']} identified key risk factors (Defender was offline)."
+
     log_council_message("council_verdict", verdict, root_dir)
     log_council_message("council", "=== Council Session Concluded. Swarm executing consensus. ===", root_dir)
 
