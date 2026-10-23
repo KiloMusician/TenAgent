@@ -309,6 +309,11 @@ def verify_ai_provider_key(provider_id: str, key: str, base_url: str = "") -> di
         
     return {"status": "invalid_key", "valid": False, "statusDetail": "Invalid Key", "models": []}
 
+if sys.platform != "win32":
+    print("\n[TenAgent] Notice: TenAgent Virtual Office is designed and optimized for Windows environments.")
+    print("Please launch TenAgent on Windows 10 or 11.\n")
+    sys.exit(0)
+
 import ctypes
 from ctypes import wintypes
 

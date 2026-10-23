@@ -10,6 +10,7 @@
 <p align="center">
   <a href="#core-architecture"><img src="https://img.shields.io/badge/Architecture-Clean%20Swarm-brightgreen.svg" alt="Clean Architecture"></a>
   <a href="#2d-virtual-office-monitor-dashboard"><img src="https://img.shields.io/badge/Virtual%20Office-Port%207777-orange.svg" alt="Virtual Office"></a>
+  <img src="https://img.shields.io/badge/Platform-Windows%20(10%2F11)-0078D4.svg?logo=windows&logoColor=white" alt="Platform Windows">
   <a href="#anti-slop-discipline"><img src="https://img.shields.io/badge/Code%20Standard-Anti--Slop-ff69b4.svg" alt="Anti-Slop"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
 </p>
@@ -143,8 +144,9 @@ TenAgent integrates the `.agents/skills/antislop*` hygiene guidelines:
 ## Quick Start Guide
 
 ### Prerequisites
-* Python 3.9+ (no external `pip` packages required for core dashboard or council)
-* An AI coding assistant CLI (e.g. [Google Antigravity](https://github.com/google-deepmind), Claude Code, Gemini CLI, or any LLM runner)
+* **Environment**: Windows 10 / 11 (PowerShell or Command Prompt)
+* **Python**: Python 3.9+ (no external `pip` packages required for core dashboard or council)
+* **AI Assistant CLI**: Any CLI assistant ([Google Antigravity](https://github.com/google-deepmind), Kiro CLI, Claude Code, Gemini CLI, or any LLM runner)
 
 ### Step 1: Clone Repository
 ```bash
