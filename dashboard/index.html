@@ -1791,10 +1791,10 @@
     }
 
     /* Custom Name & Base URL Input Wrap */
-    .custom-name-wrap, .base-url-wrap {
+    .custom-name-wrap, .base-url-wrap, .model-select-wrap {
       margin-top: 2px;
     }
-    .custom-name-input, .base-url-input {
+    .custom-name-input, .base-url-input, .model-select-input {
       width: 100%;
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
@@ -1806,7 +1806,16 @@
       box-sizing: border-box;
       transition: border-color 0.15s ease;
     }
-    .custom-name-input:focus, .base-url-input:focus {
+    .model-select-input {
+      padding-left: 28px;
+      padding-right: 24px;
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='11' height='11' viewBox='0 0 24 24' fill='none' stroke='%23888888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+    }
+    .custom-name-input:focus, .base-url-input:focus, .model-select-input:focus {
       border-color: var(--accent-blue);
     }
     .custom-name-input::placeholder, .base-url-input::placeholder {
@@ -3538,7 +3547,81 @@
       return html;
     }
 
-    function createProviderCardHtml(cardId, provider = 'gemini', key = '', customName = '', status = '', statusDetail = '', baseUrl = '') {
+    const cardModelsCache = {};
+
+    function renderModelDropdownItemsHtml(cardId, currentModel = '', models = []) {
+      if (models && models.length > 0) {
+        cardModelsCache[cardId] = models;
+      }
+      const activeList = (models && models.length > 0) ? models : (cardModelsCache[cardId] || []);
+      const isDefault = !currentModel;
+      let html = `
+        <div class="dropdown-item ${isDefault ? 'selected' : ''}" onclick="selectModelOption('${cardId}', '', event)">
+          <div class="dropdown-item-left">
+            <svg class="provider-icon-svg" style="width: 13px; height: 13px; color: var(--text-muted);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg>
+            <span>Auto-select model (Default)</span>
+          </div>
+          ${isDefault ? '<svg class="dropdown-check-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>' : ''}
+        </div>
+      `;
+
+      if (activeList.length > 0) {
+        activeList.forEach(m => {
+          const isSel = (m === currentModel);
+          html += `
+            <div class="dropdown-item ${isSel ? 'selected' : ''}" onclick="selectModelOption('${cardId}', '${escapeHtml(m)}', event)">
+              <div class="dropdown-item-left">
+                <svg class="provider-icon-svg" style="width: 13px; height: 13px; color: var(--accent-blue);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+                <span>${escapeHtml(m)}</span>
+              </div>
+              ${isSel ? '<svg class="dropdown-check-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>' : ''}
+            </div>
+          `;
+        });
+      } else if (currentModel) {
+        html += `
+          <div class="dropdown-item selected" onclick="selectModelOption('${cardId}', '${escapeHtml(currentModel)}', event)">
+            <div class="dropdown-item-left">
+              <svg class="provider-icon-svg" style="width: 13px; height: 13px; color: var(--accent-blue);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+              <span>${escapeHtml(currentModel)}</span>
+            </div>
+            <svg class="dropdown-check-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          </div>
+        `;
+      }
+      return html;
+    }
+
+    function toggleModelDropdown(cardId, event) {
+      if (event) event.stopPropagation();
+      const menu = document.getElementById(`model-dd-menu-${cardId}`);
+      const trigger = document.getElementById(`model-dd-trigger-${cardId}`);
+      const card = document.getElementById(`card-${cardId}`);
+      if (!menu || !trigger) return;
+
+      const isShowing = menu.classList.contains('show');
+      closeAllDropdowns();
+      if (!isShowing) {
+        menu.classList.add('show');
+        trigger.classList.add('open');
+        if (card) card.classList.add('dropdown-open');
+      }
+    }
+
+    function selectModelOption(cardId, modelVal, event) {
+      if (event) event.stopPropagation();
+      const hiddenInput = document.getElementById(`model-select-${cardId}`);
+      const label = document.getElementById(`model-dd-label-${cardId}`);
+      const menu = document.getElementById(`model-dd-menu-${cardId}`);
+
+      if (hiddenInput) hiddenInput.value = modelVal;
+      if (label) label.textContent = modelVal || 'Auto-select model (Default)';
+      if (menu) menu.innerHTML = renderModelDropdownItemsHtml(cardId, modelVal);
+
+      closeAllDropdowns();
+    }
+
+    function createProviderCardHtml(cardId, provider = 'gemini', key = '', customName = '', status = '', statusDetail = '', baseUrl = '', model = '', modelsList = []) {
       let isCustom = (provider === 'custom') || (!KNOWN_PROVIDERS.some(p => p.id === provider) && Boolean(provider));
       let is9Router = (provider === '9router');
       let selectedProviderId = isCustom ? 'custom' : provider;
@@ -3589,15 +3672,29 @@
           </div>
 
           <div class="base-url-wrap" id="base-url-wrap-${cardId}" style="display: ${showUrl ? 'block' : 'none'};">
-            <input type="text" class="base-url-input" id="base-url-input-${cardId}" placeholder="${is9Router ? 'Gateway URL (default: http://localhost:20128/v1)' : 'Base URL (Optional, default: OpenAI)'}" value="${escapeHtml(urlVal)}" />
+            <input type="text" class="base-url-input" id="base-url-input-${cardId}" placeholder="${is9Router ? 'Gateway URL (default: http://localhost:20128/v1)' : 'Base URL (Optional, default: OpenAI)'}" value="${escapeHtml(urlVal)}" onchange="autoFetchModelsForCard('${cardId}')" />
           </div>
 
           <div class="provider-card-input-wrap">
             <svg class="input-key-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
-            <input type="password" class="key-input-field" placeholder="Enter API Key" value="${escapeHtml(key)}" />
+            <input type="password" class="key-input-field" placeholder="Enter API Key" value="${escapeHtml(key)}" onchange="autoFetchModelsForCard('${cardId}')" />
             <button type="button" class="btn-toggle-eye" onclick="toggleKeyVisibility(this)" title="Toggle visibility">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
             </button>
+          </div>
+
+          <div class="custom-dropdown-wrap model-dropdown-wrap" id="model-dd-wrap-${cardId}" style="margin-top: 2px;">
+            <button type="button" class="custom-dropdown-trigger" id="model-dd-trigger-${cardId}" onclick="toggleModelDropdown('${cardId}', event)">
+              <span class="dropdown-trigger-content">
+                <svg class="provider-icon-svg" style="color: var(--accent-blue);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                <span id="model-dd-label-${cardId}">${escapeHtml(model || 'Auto-select model (Default)')}</span>
+              </span>
+              <svg class="dropdown-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+            <div class="custom-dropdown-menu" id="model-dd-menu-${cardId}">
+              ${renderModelDropdownItemsHtml(cardId, model, modelsList)}
+            </div>
+            <input type="hidden" class="model-select-input" id="model-select-${cardId}" value="${escapeHtml(model)}" />
           </div>
         </div>
       `;
@@ -3676,6 +3773,55 @@
       }
 
       closeAllDropdowns();
+      autoFetchModelsForCard(cardId);
+    }
+
+    async function autoFetchModelsForCard(cardId) {
+      const pInput = document.getElementById(`provider-id-${cardId}`);
+      const cardEl = document.getElementById(`card-${cardId}`);
+      if (!cardEl) return;
+      const keyInput = cardEl.querySelector('.key-input-field');
+      const urlInput = document.getElementById(`base-url-input-${cardId}`);
+      const hiddenInput = document.getElementById(`model-select-${cardId}`);
+      const menu = document.getElementById(`model-dd-menu-${cardId}`);
+      const label = document.getElementById(`model-dd-label-${cardId}`);
+      if (!hiddenInput || !keyInput) return;
+
+      const pId = pInput ? pInput.value : 'gemini';
+      const keyVal = keyInput.value.trim();
+      const urlVal = urlInput ? urlInput.value.trim() : '';
+
+      if (!keyVal && pId !== 'ollama') return;
+
+      const currentVal = hiddenInput.value;
+      const prevLabelText = label ? label.textContent : '';
+      if (label) label.textContent = 'Fetching models...';
+
+      try {
+        const res = await fetch('/api/models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: pId, key: keyVal, baseUrl: urlVal })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.models) && data.models.length > 0) {
+            cardModelsCache[cardId] = data.models;
+            if (menu) menu.innerHTML = renderModelDropdownItemsHtml(cardId, currentVal, data.models);
+            if (label) label.textContent = currentVal || 'Auto-select model (Default)';
+            if (data.valid) {
+              const badgeWrap = cardEl.querySelector('.card-status-badge');
+              if (badgeWrap) {
+                badgeWrap.className = 'card-status-badge active';
+                badgeWrap.textContent = 'Verified';
+              }
+            }
+            return;
+          }
+        }
+      } catch (e) {
+      }
+      if (label) label.textContent = prevLabelText || (currentVal || 'Auto-select model (Default)');
     }
 
     function handleCustomNameChange(cardId, val) {
@@ -3712,7 +3858,7 @@
       `;
     }
 
-    function addProviderCard(provider = 'gemini', key = '', customName = '', status = '', statusDetail = '', baseUrl = '') {
+    function addProviderCard(provider = 'gemini', key = '', customName = '', status = '', statusDetail = '', baseUrl = '', model = '', modelsList = []) {
       const list = document.getElementById('provider-cards-list');
       if (!list) return;
       const prompt = document.getElementById('empty-keys-prompt');
@@ -3721,7 +3867,7 @@
       cardCounter++;
       const id = `c${cardCounter}_${Date.now()}`;
       const temp = document.createElement('div');
-      temp.innerHTML = createProviderCardHtml(id, provider, key, customName, status, statusDetail, baseUrl).trim();
+      temp.innerHTML = createProviderCardHtml(id, provider, key, customName, status, statusDetail, baseUrl, model, modelsList).trim();
       list.appendChild(temp.firstElementChild);
       updateProviderCardsCount();
     }
@@ -3808,10 +3954,10 @@
                     p.statusDetail = std;
                     p.valid = false;
                   }
-                  addProviderCard(p.provider || 'gemini', p.key || '', p.name || '', st || '', std || '', p.baseUrl || p.base_url || '');
+                  addProviderCard(p.provider || 'gemini', p.key || '', p.name || '', st || '', std || '', p.baseUrl || p.base_url || '', p.model || '', p.models || []);
                 });
               } else if (data.api_key && data.api_key.trim()) {
-                addProviderCard(data.provider || 'gemini', data.api_key, '', data.status || '', data.statusDetail || '', data.baseUrl || data.base_url || '');
+                addProviderCard(data.provider || 'gemini', data.api_key, '', data.status || '', data.statusDetail || '', data.baseUrl || data.base_url || '', data.model || '', data.models || []);
               } else {
                 renderEmptyProviderCardsNotice();
               }
@@ -3842,6 +3988,7 @@
         const customInput = c.querySelector('.custom-name-input');
         const urlInput = c.querySelector('.base-url-input');
         const keyInput = c.querySelector('.key-input-field');
+        const modelSelect = c.querySelector('.model-select-input');
 
         let pId = pInput ? pInput.value : 'gemini';
         let customNameVal = '';
@@ -3851,13 +3998,15 @@
         }
         const keyVal = keyInput ? keyInput.value.trim() : '';
         const urlVal = urlInput ? urlInput.value.trim() : '';
+        const modelVal = modelSelect ? modelSelect.value.trim() : '';
         if (keyVal) {
           providers.push({
             provider: pId,
             key: keyVal,
             name: customNameVal,
             baseUrl: urlVal,
-            base_url: urlVal
+            base_url: urlVal,
+            model: modelVal
           });
         }
       });

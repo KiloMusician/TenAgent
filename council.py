@@ -145,6 +145,8 @@ def call_llm(provider: dict, system_prompt: str, user_prompt: str, timeout: int 
     # 1. Google Gemini
     if "gemini" in p_id or "google" in p_id:
         models = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-pro", "gemini-1.5-flash"]
+        if provider.get("model"):
+            models = [provider.get("model")] + [m for m in models if m != provider.get("model")]
         headers = {
             "Content-Type": "application/json",
             "User-Agent": BROWSER_UA
@@ -185,8 +187,9 @@ def call_llm(provider: dict, system_prompt: str, user_prompt: str, timeout: int 
             "Content-Type": "application/json",
             "User-Agent": BROWSER_UA
         }
+        chosen_claude_model = provider.get("model") or "claude-3-5-sonnet-20241022"
         payload = {
-            "model": "claude-3-5-sonnet-20241022",
+            "model": chosen_claude_model,
             "max_tokens": 600,
             "system": system_prompt,
             "messages": [{"role": "user", "content": user_prompt}]
@@ -224,6 +227,9 @@ def call_llm(provider: dict, system_prompt: str, user_prompt: str, timeout: int 
         elif "openrouter" in p_id:
             endpoint = "https://openrouter.ai/api/v1/chat/completions"
             models = ["meta-llama/llama-3.3-70b-instruct:free", "auto"]
+
+        if provider.get("model"):
+            models = [provider.get("model")] + [m for m in models if m != provider.get("model")]
 
         headers = {
             "Content-Type": "application/json",

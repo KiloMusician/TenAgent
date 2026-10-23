@@ -172,9 +172,10 @@ def verify_ai_provider_key(provider_id: str, key: str, base_url: str = "") -> di
     k = (key or "").strip()
     b_url = (base_url or "").strip()
     if not k:
-        return {"status": "empty", "valid": False, "statusDetail": "Empty Key"}
+        return {"status": "empty", "valid": False, "statusDetail": "Empty Key", "models": []}
     
     headers = {"User-Agent": "TenAgent/1.0"}
+    models = []
     
     try:
         if "gemini" in p_id or "google" in p_id:
@@ -182,7 +183,16 @@ def verify_ai_provider_key(provider_id: str, key: str, base_url: str = "") -> di
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=8) as resp:
                 if resp.status == 200:
-                    return {"status": "active", "valid": True, "statusDetail": "Active"}
+                    try:
+                        raw = json.loads(resp.read().decode("utf-8"))
+                        for m in raw.get("models", []):
+                            m_name = m.get("name", "").replace("models/", "")
+                            methods = m.get("supportedGenerationMethods", [])
+                            if "generateContent" in methods or "gemini" in m_name:
+                                models.append(m_name)
+                    except Exception:
+                        pass
+                    return {"status": "active", "valid": True, "statusDetail": "Active", "models": models[:60]}
         elif "anthropic" in p_id or "claude" in p_id:
             url = "https://api.anthropic.com/v1/models"
             headers["x-api-key"] = k
@@ -190,34 +200,59 @@ def verify_ai_provider_key(provider_id: str, key: str, base_url: str = "") -> di
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=8) as resp:
                 if resp.status == 200:
-                    return {"status": "active", "valid": True, "statusDetail": "Active"}
+                    try:
+                        raw = json.loads(resp.read().decode("utf-8"))
+                        models = [m.get("id") for m in raw.get("data", []) if m.get("id")]
+                    except Exception:
+                        pass
+                    return {"status": "active", "valid": True, "statusDetail": "Active", "models": models[:60]}
         elif "groq" in p_id:
             url = "https://api.groq.com/openai/v1/models"
             headers["Authorization"] = f"Bearer {k}"
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=8) as resp:
                 if resp.status == 200:
-                    return {"status": "active", "valid": True, "statusDetail": "Active"}
+                    try:
+                        raw = json.loads(resp.read().decode("utf-8"))
+                        models = [m.get("id") for m in raw.get("data", []) if m.get("id") and m.get("active", True) is not False]
+                    except Exception:
+                        pass
+                    return {"status": "active", "valid": True, "statusDetail": "Active", "models": models[:60]}
         elif "deepseek" in p_id:
             url = "https://api.deepseek.com/models"
             headers["Authorization"] = f"Bearer {k}"
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=8) as resp:
                 if resp.status == 200:
-                    return {"status": "active", "valid": True, "statusDetail": "Active"}
+                    try:
+                        raw = json.loads(resp.read().decode("utf-8"))
+                        models = [m.get("id") for m in raw.get("data", []) if m.get("id")]
+                    except Exception:
+                        pass
+                    return {"status": "active", "valid": True, "statusDetail": "Active", "models": models[:60]}
         elif "grok" in p_id or "xai" in p_id or "x.ai" in p_id:
             url = "https://api.x.ai/v1/models"
             headers["Authorization"] = f"Bearer {k}"
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=8) as resp:
                 if resp.status == 200:
-                    return {"status": "active", "valid": True, "statusDetail": "Active"}
+                    try:
+                        raw = json.loads(resp.read().decode("utf-8"))
+                        models = [m.get("id") for m in raw.get("data", []) if m.get("id")]
+                    except Exception:
+                        pass
+                    return {"status": "active", "valid": True, "statusDetail": "Active", "models": models[:60]}
         elif "ollama" in p_id:
             url = "http://localhost:11434/api/tags"
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=3) as resp:
                 if resp.status == 200:
-                    return {"status": "active", "valid": True, "statusDetail": "Active (Local)"}
+                    try:
+                        raw = json.loads(resp.read().decode("utf-8"))
+                        models = [m.get("name") or m.get("model") for m in raw.get("models", []) if m.get("name") or m.get("model")]
+                    except Exception:
+                        pass
+                    return {"status": "active", "valid": True, "statusDetail": "Active (Local)", "models": models[:60]}
         elif "9router" in p_id or b_url:
             target = b_url if b_url else "http://localhost:20128/v1"
             target = target.rstrip("/")
@@ -231,28 +266,48 @@ def verify_ai_provider_key(provider_id: str, key: str, base_url: str = "") -> di
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=8) as resp:
                 if resp.status in (200, 201):
-                    return {"status": "active", "valid": True, "statusDetail": "Active"}
+                    try:
+                        raw = json.loads(resp.read().decode("utf-8"))
+                        items = raw.get("data") if isinstance(raw.get("data"), list) else raw.get("models", [])
+                        for item in items:
+                            if isinstance(item, dict):
+                                m_id = item.get("id") or item.get("name")
+                                if m_id:
+                                    models.append(m_id)
+                            elif isinstance(item, str):
+                                models.append(item)
+                    except Exception:
+                        pass
+                    return {"status": "active", "valid": True, "statusDetail": "Active", "models": models[:60]}
         else:
             url = "https://api.openai.com/v1/models"
             headers["Authorization"] = f"Bearer {k}"
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=8) as resp:
                 if resp.status == 200:
-                    return {"status": "active", "valid": True, "statusDetail": "Active"}
+                    try:
+                        raw = json.loads(resp.read().decode("utf-8"))
+                        all_m = [m.get("id") for m in raw.get("data", []) if m.get("id")]
+                        chat_pfx = ("gpt-4", "gpt-3.5", "o1", "o3", "chatgpt")
+                        models = [m for m in all_m if any(m.startswith(p) for p in chat_pfx)] or all_m
+                        models.sort()
+                    except Exception:
+                        pass
+                    return {"status": "active", "valid": True, "statusDetail": "Active", "models": models[:60]}
     except urllib.error.HTTPError as e:
         if e.code in (400, 401, 403):
-            return {"status": "invalid_key", "valid": False, "statusDetail": "Invalid Key"}
+            return {"status": "invalid_key", "valid": False, "statusDetail": "Invalid Key", "models": []}
         elif e.code == 429:
-            return {"status": "rate_limited", "valid": False, "statusDetail": "Rate Limited"}
-        return {"status": "error", "valid": False, "statusDetail": f"HTTP {e.code}"}
+            return {"status": "rate_limited", "valid": False, "statusDetail": "Rate Limited", "models": []}
+        return {"status": "error", "valid": False, "statusDetail": f"HTTP {e.code}", "models": []}
     except Exception:
         if "ollama" in p_id:
-            return {"status": "connection_error", "valid": False, "statusDetail": "Ollama Offline"}
+            return {"status": "connection_error", "valid": False, "statusDetail": "Ollama Offline", "models": []}
         if "9router" in p_id or b_url:
-            return {"status": "connection_error", "valid": False, "statusDetail": "Connection Failed"}
-        return {"status": "connection_error", "valid": False, "statusDetail": "Connection Failed"}
+            return {"status": "connection_error", "valid": False, "statusDetail": "Connection Failed", "models": []}
+        return {"status": "connection_error", "valid": False, "statusDetail": "Connection Failed", "models": []}
         
-    return {"status": "invalid_key", "valid": False, "statusDetail": "Invalid Key"}
+    return {"status": "invalid_key", "valid": False, "statusDetail": "Invalid Key", "models": []}
 
 import ctypes
 from ctypes import wintypes
@@ -294,10 +349,11 @@ class _UNICODE_STRING(ctypes.Structure):
         ("Buffer", ctypes.c_void_p),
     ]
 
-def _get_process_cwd(pid: int):
+def _get_process_info(pid: int):
+    """Retrieves (cwd, cmdline) for a target Windows process PID via PEB."""
     h_proc = _kernel32.OpenProcess(_PROCESS_QUERY_INFORMATION | _PROCESS_VM_READ, False, pid)
     if not h_proc:
-        return None
+        return None, None
     try:
         pbi = _PROCESS_BASIC_INFORMATION()
         ret_len = wintypes.ULONG()
@@ -305,7 +361,7 @@ def _get_process_cwd(pid: int):
             h_proc, 0, ctypes.byref(pbi), ctypes.sizeof(pbi), ctypes.byref(ret_len)
         )
         if status != 0 or not pbi.PebBaseAddress:
-            return None
+            return None, None
 
         proc_params_addr = ctypes.c_void_p()
         read_bytes = ctypes.c_size_t()
@@ -315,28 +371,39 @@ def _get_process_cwd(pid: int):
             ctypes.byref(read_bytes)
         )
         if not res or not proc_params_addr.value:
-            return None
+            return None, None
 
+        cwd_val = None
         cur_dir_str = _UNICODE_STRING()
         res = _kernel32.ReadProcessMemory(
             h_proc, ctypes.c_void_p(proc_params_addr.value + 0x38),
             ctypes.byref(cur_dir_str), ctypes.sizeof(cur_dir_str),
             ctypes.byref(read_bytes)
         )
-        if not res or not cur_dir_str.Buffer or cur_dir_str.Length == 0:
-            return None
+        if res and cur_dir_str.Buffer and cur_dir_str.Length > 0:
+            buf = ctypes.create_unicode_buffer(cur_dir_str.Length // 2)
+            if _kernel32.ReadProcessMemory(h_proc, ctypes.c_void_p(cur_dir_str.Buffer), buf, cur_dir_str.Length, ctypes.byref(read_bytes)):
+                cwd_val = buf.value
 
-        buf = ctypes.create_unicode_buffer(cur_dir_str.Length // 2)
+        cmdline_val = None
+        cmd_str = _UNICODE_STRING()
         res = _kernel32.ReadProcessMemory(
-            h_proc, ctypes.c_void_p(cur_dir_str.Buffer),
-            buf, cur_dir_str.Length,
+            h_proc, ctypes.c_void_p(proc_params_addr.value + 0x70),
+            ctypes.byref(cmd_str), ctypes.sizeof(cmd_str),
             ctypes.byref(read_bytes)
         )
-        if not res:
-            return None
-        return buf.value
+        if res and cmd_str.Buffer and cmd_str.Length > 0:
+            cbuf = ctypes.create_unicode_buffer(cmd_str.Length // 2)
+            if _kernel32.ReadProcessMemory(h_proc, ctypes.c_void_p(cmd_str.Buffer), cbuf, cmd_str.Length, ctypes.byref(read_bytes)):
+                cmdline_val = cbuf.value
+
+        return cwd_val, cmdline_val
     finally:
         _kernel32.CloseHandle(h_proc)
+
+def _get_process_cwd(pid: int):
+    cwd, _ = _get_process_info(pid)
+    return cwd
 
 _cli_cache = {"time": 0, "data": {"name": "No CLI Detected", "status": "offline", "active": False}}
 
@@ -351,45 +418,148 @@ def detect_cli_status(root_dir: str) -> dict:
     pe32.dwSize = ctypes.sizeof(_PROCESSENTRY32)
 
     found = None
+    terminal_fallback = None
+
+    # Identify self PID and parent PIDs (e.g. office.bat / cmd running serve.py) to avoid false positives
+    self_pid = os.getpid()
+    ignored_pids = {self_pid}
+    curr_pid = self_pid
+    for _ in range(5):
+        try:
+            h_p = _kernel32.OpenProcess(_PROCESS_QUERY_INFORMATION, False, curr_pid)
+            if not h_p:
+                break
+            pbi_p = _PROCESS_BASIC_INFORMATION()
+            ret_p = wintypes.ULONG()
+            if _ntdll.NtQueryInformationProcess(h_p, 0, ctypes.byref(pbi_p), ctypes.sizeof(pbi_p), ctypes.byref(ret_p)) == 0:
+                ppid = int(pbi_p.Reserved3 or 0)
+                if ppid and ppid not in ignored_pids:
+                    ignored_pids.add(ppid)
+                    curr_pid = ppid
+                else:
+                    _kernel32.CloseHandle(h_p)
+                    break
+            _kernel32.CloseHandle(h_p)
+        except Exception:
+            break
+
+    CANDIDATE_EXES = (
+        'agy', 'kiro', 'claude', 'gemini', 'aider', 'cursor', 'cline', 'codex', 'goose',
+        'windsurf', 'code.exe', 'wsl.exe', 'interpreter', 'plandex', 'mentat',
+        'openhands', 'opendevin', 'opencode', 'crush', 'droid', 'bolt', 'qodo',
+        'codium', 'continue', 'cody', 'copilot', 'tabby',
+        'node.exe', 'python.exe', 'python3.exe', 'cmd.exe', 'powershell.exe', 'pwsh.exe',
+        'windowsterminal.exe', 'wt.exe', 'bash.exe'
+    )
+
     try:
         success = _kernel32.Process32First(h_snap, ctypes.byref(pe32))
         while success:
+            pid = pe32.th32ProcessID
+            if pid in ignored_pids:
+                success = _kernel32.Process32Next(h_snap, ctypes.byref(pe32))
+                continue
+
             exe_name = pe32.szExeFile.decode('latin-1', errors='ignore').lower()
-            if any(cli in exe_name for cli in ('agy', 'claude', 'gemini', 'aider', 'cursor', 'cline', 'codex', 'goose')):
-                pid = pe32.th32ProcessID
-                cwd = _get_process_cwd(pid)
+            if any(cli in exe_name for cli in CANDIDATE_EXES):
+                cwd, cmdline = _get_process_info(pid)
                 if cwd:
                     norm_cwd = os.path.normpath(cwd).lower()
                     if norm_cwd == norm_root or norm_cwd.startswith(norm_root + os.sep):
-                        if 'agy' in exe_name:
+                        cmd_lower = (cmdline or "").lower()
+
+                        # Strictly ignore background server scripts and dashboard launchers
+                        if any(ign in cmd_lower for ign in ('serve.py', 'office.bat', 'stream.py', 'swarm_pipeline.py', 'py_compile')):
+                            success = _kernel32.Process32Next(h_snap, ctypes.byref(pe32))
+                            continue
+
+                        # Detect specific AI coding CLIs and tools
+                        if 'agy' in exe_name or 'agy' in cmd_lower:
                             found = {'name': 'Antigravity CLI (agy)', 'status': 'active', 'active': True}
                             break
-                        elif 'claude' in exe_name:
+                        elif 'kiro' in exe_name or 'kiro' in cmd_lower:
+                            found = {'name': 'Kiro CLI', 'status': 'active', 'active': True}
+                            break
+                        elif 'claude' in exe_name or 'claude' in cmd_lower:
                             found = {'name': 'Claude Code', 'status': 'active', 'active': True}
                             break
-                        elif 'gemini' in exe_name:
+                        elif 'gemini' in exe_name or 'gemini' in cmd_lower:
                             found = {'name': 'Gemini CLI', 'status': 'active', 'active': True}
                             break
-                        elif 'aider' in exe_name:
+                        elif 'aider' in exe_name or 'aider' in cmd_lower:
                             found = {'name': 'Aider CLI', 'status': 'active', 'active': True}
                             break
-                        elif 'cursor' in exe_name:
+                        elif 'cursor' in exe_name or 'cursor' in cmd_lower:
                             found = {'name': 'Cursor IDE', 'status': 'active', 'active': True}
                             break
-                        elif 'cline' in exe_name:
+                        elif 'windsurf' in exe_name or 'windsurf' in cmd_lower:
+                            found = {'name': 'Windsurf IDE', 'status': 'active', 'active': True}
+                            break
+                        elif 'roo' in cmd_lower:
+                            found = {'name': 'Roo Code Assistant', 'status': 'active', 'active': True}
+                            break
+                        elif 'cline' in exe_name or 'cline' in cmd_lower:
                             found = {'name': 'Cline Assistant', 'status': 'active', 'active': True}
                             break
-                        elif 'codex' in exe_name:
+                        elif 'interpreter' in cmd_lower or 'open-interpreter' in cmd_lower:
+                            found = {'name': 'Open Interpreter', 'status': 'active', 'active': True}
+                            break
+                        elif 'plandex' in exe_name or 'plandex' in cmd_lower:
+                            found = {'name': 'Plandex AI', 'status': 'active', 'active': True}
+                            break
+                        elif 'mentat' in exe_name or 'mentat' in cmd_lower:
+                            found = {'name': 'Mentat AI', 'status': 'active', 'active': True}
+                            break
+                        elif 'openhands' in cmd_lower or 'opendevin' in cmd_lower:
+                            found = {'name': 'OpenHands (OpenDevin)', 'status': 'active', 'active': True}
+                            break
+                        elif 'opencode' in cmd_lower:
+                            found = {'name': 'OpenCode CLI', 'status': 'active', 'active': True}
+                            break
+                        elif 'crush' in cmd_lower:
+                            found = {'name': 'Crush AI', 'status': 'active', 'active': True}
+                            break
+                        elif 'droid' in cmd_lower:
+                            found = {'name': 'Factory Droid', 'status': 'active', 'active': True}
+                            break
+                        elif 'bolt' in cmd_lower:
+                            found = {'name': 'Bolt.new CLI', 'status': 'active', 'active': True}
+                            break
+                        elif 'qodo' in cmd_lower or 'codium' in cmd_lower:
+                            found = {'name': 'Qodo Gen (Codium)', 'status': 'active', 'active': True}
+                            break
+                        elif 'continue' in cmd_lower:
+                            found = {'name': 'Continue Dev', 'status': 'active', 'active': True}
+                            break
+                        elif 'cody' in cmd_lower:
+                            found = {'name': 'Sourcegraph Cody', 'status': 'active', 'active': True}
+                            break
+                        elif 'copilot' in cmd_lower:
+                            found = {'name': 'GitHub Copilot CLI', 'status': 'active', 'active': True}
+                            break
+                        elif 'codex' in exe_name or 'codex' in cmd_lower:
                             found = {'name': 'Codex CLI', 'status': 'active', 'active': True}
                             break
-                        elif 'goose' in exe_name:
+                        elif 'goose' in exe_name or 'goose' in cmd_lower:
                             found = {'name': 'Goose CLI', 'status': 'active', 'active': True}
                             break
+                        elif 'code.exe' in exe_name:
+                            found = {'name': 'VS Code (Active in Project)', 'status': 'active', 'active': True}
+                            break
+                        # Generic interactive terminal detection (separate from office.bat launcher)
+                        elif not terminal_fallback and any(sh in exe_name for sh in ('powershell.exe', 'pwsh.exe', 'wt.exe', 'bash.exe', 'wsl.exe', 'cmd.exe')):
+                            # Only treat CMD / PowerShell as active if it's an interactive shell not running serve.py
+                            if 'cmd' in exe_name:
+                                terminal_fallback = {'name': 'Command Prompt (CMD)', 'status': 'active', 'active': True}
+                            elif 'powershell' in exe_name or 'pwsh' in exe_name:
+                                terminal_fallback = {'name': 'PowerShell', 'status': 'active', 'active': True}
+                            elif 'wsl' in exe_name or 'bash' in exe_name:
+                                terminal_fallback = {'name': 'WSL Terminal', 'status': 'active', 'active': True}
             success = _kernel32.Process32Next(h_snap, ctypes.byref(pe32))
     finally:
         _kernel32.CloseHandle(h_snap)
         
-    return found or {'name': 'No CLI Detected', 'status': 'offline', 'active': False}
+    return found or terminal_fallback or {'name': 'No CLI Detected', 'status': 'offline', 'active': False}
 
 def cli_status_background_worker(root_dir: str):
     while True:
@@ -1208,10 +1378,12 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                         p_entry["status"] = ver["status"]
                         p_entry["valid"] = ver["valid"]
                         p_entry["statusDetail"] = ver["statusDetail"]
+                        p_entry["models"] = ver.get("models", [])
                     else:
                         p_entry["status"] = "empty"
                         p_entry["valid"] = False
                         p_entry["statusDetail"] = "No Key"
+                        p_entry["models"] = []
                     return p_entry
 
                 if providers:
@@ -1226,6 +1398,33 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 return
             except Exception as e:
                 self.send_json_response({"error": str(e)}, 400)
+                return
+
+        if self.path.startswith('/api/models'):
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8')
+                payload = json.loads(body)
+                p_id = (payload.get("provider") or "").strip()
+                k = (payload.get("key") or "").strip()
+                b_url = (payload.get("baseUrl") or payload.get("base_url") or "").strip()
+                if ("..." in k or k == "***"):
+                    cfg_file = os.path.join(SPECS_DIR, "swarm-config.json")
+                    if os.path.exists(cfg_file):
+                        try:
+                            with open(cfg_file, "r", encoding="utf-8") as f:
+                                scfg = json.load(f)
+                                for sp in scfg.get("providers", []):
+                                    if sp.get("provider") == p_id and sp.get("key"):
+                                        k = sp.get("key")
+                                        break
+                        except Exception:
+                            pass
+                ver = verify_ai_provider_key(p_id, k, base_url=b_url)
+                self.send_json_response(ver)
+                return
+            except Exception as e:
+                self.send_json_response({"status": "error", "valid": False, "models": [], "error": str(e)}, 400)
                 return
 
         if self.path == '/api/command':
