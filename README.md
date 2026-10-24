@@ -21,6 +21,24 @@
 
 ---
 
+## Local dashboard operator access
+
+The Virtual Office runs on loopback and requires operator login for its pages,
+logs, configuration, and command API. Start it with `python dashboard/serve.py`
+or the documented launcher. Open the local URL printed in the terminal and
+authenticate with username `tenagent` and the random password printed there.
+
+For a stable operator password, set `TENAGENT_DASHBOARD_PASSWORD` in the shell
+before starting TenAgent. Keep the password private; never commit it or expose
+the dashboard to untrusted hosts. The server intentionally does **not** enable
+cross-origin browser access. The command API's existing CSRF token is an
+additional check, **not** a replacement for operator authorization.
+
+If the dashboard was previously accessible on a shared network, rotate any
+provider keys saved while that version was in use.
+
+---
+
 ## The Problem TenAgent Solves
 
 When a single AI coding agent is asked to architect schemas, write frontend components, build backend endpoints, create unit tests, and configure Docker containers in a single conversation context, its **context window degrades rapidly**.
