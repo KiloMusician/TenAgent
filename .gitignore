@@ -19,6 +19,8 @@ __pycache__/
 .env.*.local
 specs/swarm-config.json
 specs/terminal.log
+specs/swarm-run.json
+specs/.swarm-run.lock
 
 # Track example configuration as template for new clones
 !specs/swarm-config.example.json
