@@ -14,12 +14,20 @@ import sys
 import secrets
 
 _SESSION_TOKEN = secrets.token_hex(24)
+_DASHBOARD_PASSWORD = os.environ.get('TENAGENT_DASHBOARD_PASSWORD') or secrets.token_urlsafe(24)
 
 DEFAULT_PORT = 7777
 MAX_PORT_ATTEMPTS = 50
 DIRECTORY = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if DIRECTORY not in sys.path:
     sys.path.insert(0, DIRECTORY)
+
+from dashboard.security import (
+    public_config,
+    valid_local_host,
+    valid_mutation_origin,
+    valid_operator_authorization,
+)
 
 import json
 import datetime
@@ -1173,23 +1181,39 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
     def end_headers(self):
-        # Strict CORS: Only allow localhost / 127.0.0.1 origins (Zero Wildcard)
-        origin = self.headers.get('Origin', '') if hasattr(self, 'headers') and self.headers else ''
-        if origin and (origin.startswith('http://localhost:') or origin.startswith('http://127.0.0.1:')):
-            self.send_header('Access-Control-Allow-Origin', origin)
-            self.send_header('Vary', 'Origin')
-            self.send_header('Access-Control-Allow-Credentials', 'true')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-TenAgent-Token')
+        # This loopback dashboard intentionally does not expose CORS permissions.
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
         super().end_headers()
 
     def do_OPTIONS(self):
-        try:
-            self.send_response(200)
+        self.send_response(405)
+        self.send_header('Allow', 'GET, POST')
+        self.end_headers()
+
+    def _require_dashboard_access(self, mutation=False):
+        port = self.server.server_address[1]
+        host = self.headers.get('Host')
+        if not valid_local_host(host, port):
+            self.send_json_response({"error": "Invalid local Host"}, 403)
+            return False
+        if mutation and not valid_mutation_origin(
+            self.headers.get('Origin'), host,
+            self.headers.get('Sec-Fetch-Site'), port
+        ):
+            self.send_json_response({"error": "Cross-origin operation denied"}, 403)
+            return False
+        if not valid_operator_authorization(
+            self.headers.get('Authorization'), _DASHBOARD_PASSWORD
+        ):
+            self.send_response(401)
+            self.send_header(
+                'WWW-Authenticate',
+                'Basic realm="TenAgent local operator", charset="UTF-8"',
+            )
+            self.send_header('Content-Length', '0')
             self.end_headers()
-        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-            pass
+            return False
+        return True
 
     def send_json_response(self, data, status_code=200):
         try:
@@ -1208,6 +1232,8 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             pass
 
     def do_GET(self):
+        if not self._require_dashboard_access():
+            return
         clean_path = self.path.split('?')[0]
 
         # Redirect root to /dashboard/
@@ -1346,6 +1372,8 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             pass
 
     def do_POST(self):
+        if not self._require_dashboard_access(mutation=True):
+            return
         if self.path == '/api/config':
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
@@ -1672,6 +1700,9 @@ def main():
             print(f"[TenAgent] Port {DEFAULT_PORT} is in use (by another project or dev server).")
             print(f"[TenAgent] Automatically switched to available port: {port}")
         print(f"TenAgent Virtual Office v1.0.1 Running at: {url}")
+        print("Local operator username: tenagent")
+        print(f"Local operator password: {_DASHBOARD_PASSWORD}")
+        print("Set TENAGENT_DASHBOARD_PASSWORD to use a stable password.")
         print(f"Serving live specs from: {DIRECTORY}")
         print(f"Press Ctrl+C to stop the server.")
         print(f"=======================================================\n")
