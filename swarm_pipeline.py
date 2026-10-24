@@ -15,6 +15,7 @@ import threading
 import urllib.request
 import urllib.error
 import re
+import tempfile
 
 import council
 
@@ -23,17 +24,78 @@ SPECS_DIR = os.path.join(ROOT_DIR, "specs")
 LOG_FILE = os.path.join(SPECS_DIR, "terminal.log")
 STATUS_FILE = os.path.join(SPECS_DIR, "swarm-status.json")
 
+# A stage that has only *generated* output has not been verified by anything, so
+# no progress value written by this pipeline may reach 100.
+MAX_UNVERIFIED_PROGRESS = 90
+GENERATED_PROGRESS = MAX_UNVERIFIED_PROGRESS  # per-agent value once a stage has only *generated* output
+
+_PATH_LOCKS = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+_KNOWN_SECRETS = set()
+_WARNED = set()
+
+
 def get_timestamp() -> str:
     return datetime.datetime.now().strftime("%H:%M:%S")
+
+
+def remember_secrets(providers: list):
+    """Remember provider keys so that they can be scrubbed from logs and status."""
+    for p in providers or []:
+        key = (p.get("key") or "").strip()
+        if len(key) >= 6:
+            _KNOWN_SECRETS.add(key)
+
+
+def redact(text: str) -> str:
+    text = str(text)
+    for secret in sorted(_KNOWN_SECRETS, key=len, reverse=True):
+        text = text.replace(secret, "[REDACTED]")
+    return text
+
+
+def status_lock(path: str):
+    """In-process lock guarding read-modify-write of one status file."""
+    key = os.path.normcase(os.path.abspath(path))
+    with _PATH_LOCKS_GUARD:
+        return _PATH_LOCKS.setdefault(key, threading.RLock())
+
+
+def atomic_write_text(path: str, text: str):
+    """Write via a unique temp file in the same directory, then os.replace."""
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=os.path.basename(path) + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        for attempt in range(6):
+            try:
+                os.replace(tmp_path, path)
+                return
+            except PermissionError:
+                # Windows: a reader (e.g. the dashboard) briefly holds the target open.
+                if attempt == 5:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
 
 def log_swarm_message(agent_id: str, message: str, root_dir: str = None):
     target_log = os.path.join(root_dir or ROOT_DIR, "specs", "terminal.log")
     ts = get_timestamp()
-    clean_msg = message.strip()
+    clean_msg = redact(message).strip()
     if not clean_msg:
         return
     log_line = f"[{ts}] [{agent_id}] {clean_msg}\n"
-    
+
     try:
         print(f"[{agent_id}] {clean_msg}")
         sys.stdout.flush()
@@ -47,28 +109,66 @@ def log_swarm_message(agent_id: str, message: str, root_dir: str = None):
     except Exception:
         pass
 
-def update_swarm_status(agent_id: str, status: str, process_detail: str, progress: int = None, root_dir: str = None, overall_progress: int = None, phase: str = None):
-    target_status = os.path.join(root_dir or ROOT_DIR, "specs", "swarm-status.json")
-    if not os.path.exists(target_status):
-        return
 
-    try:
-        with open(target_status, "r", encoding="utf-8") as f:
-            data = json.load(f)
+def _mutate_status(root_dir: str, mutate) -> bool:
+    """Locked, atomic read-modify-write of specs/swarm-status.json.
 
+    Returns False (and says so in the log, once) when the file is absent or
+    unreadable instead of silently pretending the update happened.
+    """
+    base = root_dir or ROOT_DIR
+    target = os.path.join(base, "specs", "swarm-status.json")
+    if not os.path.exists(target):
+        return False
+    with status_lock(target):
+        try:
+            with open(target, "r", encoding="utf-8-sig") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("status root must be a JSON object")
+            mutate(data)
+            atomic_write_text(target, json.dumps(data, indent=2))
+            return True
+        except Exception as exc:
+            marker = (os.path.normcase(target), type(exc).__name__)
+            if marker not in _WARNED:
+                _WARNED.add(marker)
+                log_swarm_message(
+                    "swarm", f"[WARNING] specs/swarm-status.json not updated ({type(exc).__name__}); "
+                    "the dashboard may show stale state.", base)
+            return False
+
+
+def reset_swarm_status(root_dir: str = None) -> bool:
+    """Start of a run: drop progress and states inherited from any previous run."""
+    def mutate(data):
+        project = data.setdefault("project", {})
+        project["overallProgress"] = 0
+        project["phase"] = "Run starting"
+        for agent in data.get("agents", []):
+            agent["status"] = "WAITING"
+            agent["progress"] = 0
+            agent["processDetail"] = "Queued for this swarm run."
+    return _mutate_status(root_dir, mutate)
+
+
+def update_swarm_status(agent_id: str, status: str, process_detail: str, progress: int = None, root_dir: str = None, overall_progress: int = None, phase: str = None) -> bool:
+    detail = redact(process_detail or "")
+
+    def mutate(data):
         if overall_progress is not None and "project" in data:
-            data["project"]["overallProgress"] = max(0, min(100, int(overall_progress)))
+            data["project"]["overallProgress"] = max(0, min(MAX_UNVERIFIED_PROGRESS, int(overall_progress)))
         if phase and "project" in data:
-            data["project"]["phase"] = phase
+            data["project"]["phase"] = redact(phase)
 
         for a in data.get("agents", []):
             if a.get("id") == agent_id:
                 if status:
                     a["status"] = status
-                if process_detail:
-                    a["processDetail"] = process_detail
+                if detail:
+                    a["processDetail"] = detail
                 if progress is not None:
-                    a["progress"] = max(0, min(100, int(progress)))
+                    a["progress"] = max(0, min(MAX_UNVERIFIED_PROGRESS, int(progress)))
                 break
 
         if "logs" not in data:
@@ -76,16 +176,11 @@ def update_swarm_status(agent_id: str, status: str, process_detail: str, progres
         data["logs"].append({
             "timestamp": get_timestamp(),
             "agent": agent_id,
-            "message": f"[{agent_id}] {process_detail[:140]}"
+            "message": f"[{agent_id}] {detail[:140]}"
         })
         data["logs"] = data["logs"][-50:]
 
-        tmp_path = target_status + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, target_status)
-    except Exception:
-        pass
+    return _mutate_status(root_dir, mutate)
 
 def assign_brains_to_agents(providers: list) -> dict:
     if not providers:
@@ -175,6 +270,8 @@ def safe_call_brain(brain: dict, system_prompt: str, user_prompt: str, fallback_
 def execute_multi_brain_swarm(goal: str, root_dir: str = None):
     base_dir = root_dir or ROOT_DIR
     providers = council.get_active_providers(base_dir)
+    remember_secrets(providers)
+    reset_swarm_status(base_dir)
     brains = assign_brains_to_agents(providers)
 
     if not providers:
@@ -206,14 +303,14 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
             log_swarm_message("10_tech_lead", "Council consensus established and fed into PRD/Architecture pipelines.", base_dir)
         elif debate_res and debate_res.get("status") == "failed":
             log_swarm_message("10_tech_lead", f"[WARNING] Council pre-flight debate inconclusive: {debate_res.get('error')}. Proceeding with individual agent governance.", base_dir)
-        update_swarm_status("10_tech_lead", "IDLE", "Standing by to review deliverables against Quality Gates.", 100, base_dir)
+        update_swarm_status("10_tech_lead", "WAITING", "Standing by to review deliverables against Quality Gates.", 0, base_dir)
 
     # -------------------------------------------------------------
     # STAGE 1: 01_PM (Product Manager)
     # -------------------------------------------------------------
     b_pm = brains["01_pm"]
     log_swarm_message("01_pm", f"Brain [{b_pm['name']}]: Formulating PRD, User Stories, and Acceptance Criteria...", base_dir)
-    update_swarm_status("01_pm", "WORKING", f"[{b_pm['name']}] Writing specs/prd/user-stories.md", 30, base_dir, overall_progress=5, phase="Phase 1: PRD & Requirements")
+    update_swarm_status("01_pm", "WORKING", f"[{b_pm['name']}] Writing specs/prd/user-stories.md", 30, base_dir, phase="Phase 1: PRD & Requirements")
 
     pm_sys = (
         "You are the Product Manager in an autonomous software engineering swarm. "
@@ -235,7 +332,7 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
 
     completed_milestones += 1
     log_swarm_message("01_pm", f"Deliverable locked: specs/prd/user-stories.md ({len(prd_content)} bytes)", base_dir)
-    update_swarm_status("01_pm", "REVIEWING", "PRD locked. Handoff to 02_arch.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
+    update_swarm_status("01_pm", "REVIEWING", "PRD locked. Handoff to 02_arch.", GENERATED_PROGRESS, base_dir, overall_progress=compute_progress(completed_milestones))
     time.sleep(0.5)
 
     # -------------------------------------------------------------
@@ -265,7 +362,7 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
 
     completed_milestones += 1
     log_swarm_message("02_arch", f"Deliverable locked: specs/architecture/adr-001.md", base_dir)
-    update_swarm_status("02_arch", "REVIEWING", "Architecture locked. Handoff to 03_designer & 04_dba.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
+    update_swarm_status("02_arch", "REVIEWING", "Architecture locked. Handoff to 03_designer & 04_dba.", GENERATED_PROGRESS, base_dir, overall_progress=compute_progress(completed_milestones))
     time.sleep(0.5)
 
     # -------------------------------------------------------------
@@ -309,7 +406,7 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
 
     completed_milestones += 1
     log_swarm_message("03_designer", "Deliverables locked: specs/design/tokens.json & screen-flows.md", base_dir)
-    update_swarm_status("03_designer", "REVIEWING", "Design specifications complete.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
+    update_swarm_status("03_designer", "REVIEWING", "Design specifications complete.", GENERATED_PROGRESS, base_dir, overall_progress=compute_progress(completed_milestones))
     time.sleep(0.5)
 
     # -------------------------------------------------------------
@@ -355,7 +452,7 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
 
     completed_milestones += 1
     log_swarm_message("04_dba", "Deliverables locked: specs/database/schema.sql & specs/api/openapi.yaml", base_dir)
-    update_swarm_status("04_dba", "REVIEWING", "Schema and OpenAPI locked. Handoff to 05_backend & 06_client.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
+    update_swarm_status("04_dba", "REVIEWING", "Schema and OpenAPI locked. Handoff to 05_backend & 06_client.", GENERATED_PROGRESS, base_dir, overall_progress=compute_progress(completed_milestones))
     time.sleep(0.5)
 
     # -------------------------------------------------------------
@@ -393,7 +490,7 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
 
     completed_milestones += 1
     log_swarm_message("05_backend", "Deliverable locked: backend/src/main.py", base_dir)
-    update_swarm_status("05_backend", "REVIEWING", "Backend domain implementation complete.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
+    update_swarm_status("05_backend", "REVIEWING", "Backend domain implementation complete.", GENERATED_PROGRESS, base_dir, overall_progress=compute_progress(completed_milestones))
     time.sleep(0.5)
 
     # -------------------------------------------------------------
@@ -422,7 +519,7 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
 
     completed_milestones += 1
     log_swarm_message("06_client", "Deliverable locked: frontend/public/index.html", base_dir)
-    update_swarm_status("06_client", "REVIEWING", "Client view components compiled.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
+    update_swarm_status("06_client", "REVIEWING", "Client view components compiled.", GENERATED_PROGRESS, base_dir, overall_progress=compute_progress(completed_milestones))
     time.sleep(0.5)
 
     # -------------------------------------------------------------
@@ -472,7 +569,7 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
 
     completed_milestones += 1
     log_swarm_message("07_qa", "QA tests generated; NOT executed or verified.", base_dir)
-    update_swarm_status("07_qa", "REVIEWING", "Generated test source requires isolated test execution.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
+    update_swarm_status("07_qa", "REVIEWING", "Generated test source requires isolated test execution.", GENERATED_PROGRESS, base_dir, overall_progress=compute_progress(completed_milestones))
     time.sleep(0.5)
 
     # -------------------------------------------------------------
@@ -502,7 +599,7 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
 
     completed_milestones += 1
     log_swarm_message("08_security", "Advisory security review generated; security gate NOT verified.", base_dir)
-    update_swarm_status("08_security", "REVIEWING", "Advisory review only; independent scanning required.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
+    update_swarm_status("08_security", "REVIEWING", "Advisory review only; independent scanning required.", GENERATED_PROGRESS, base_dir, overall_progress=compute_progress(completed_milestones))
     time.sleep(0.5)
 
     # -------------------------------------------------------------
@@ -553,7 +650,7 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
 
     completed_milestones += 1
     log_swarm_message("09_devops", "Generated specs/devops/Dockerfile and ci.yml; NOT built or executed.", base_dir)
-    update_swarm_status("09_devops", "REVIEWING", "Generated DevOps templates require verification.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
+    update_swarm_status("09_devops", "REVIEWING", "Generated DevOps templates require verification.", GENERATED_PROGRESS, base_dir, overall_progress=compute_progress(completed_milestones))
     time.sleep(0.5)
 
     # -------------------------------------------------------------
@@ -595,7 +692,7 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
 
     completed_milestones += 1
     log_swarm_message("10_tech_lead", "Generation stages complete, but production readiness remains UNVERIFIED.", base_dir)
-    update_swarm_status("10_tech_lead", "REVIEWING", "Pending independent QA, security and CI evidence.", 100, base_dir, overall_progress=compute_progress(completed_milestones), phase="Generated: Awaiting Verification")
+    update_swarm_status("10_tech_lead", "REVIEWING", "Pending independent QA, security and CI evidence.", GENERATED_PROGRESS, base_dir, overall_progress=compute_progress(completed_milestones), phase="Generated: Awaiting Verification")
     log_swarm_message("swarm", "=== Draft Generated; NOT Verified or Approved for Production ===", base_dir)
     return True
 
