@@ -34,9 +34,11 @@ import contextlib
 import tempfile
 
 try:
-    from swarm_pipeline import status_lock as _pipeline_status_lock, atomic_write_text as _atomic_write_text
+    from swarm_pipeline import (status_lock as _pipeline_status_lock, atomic_write_text as _atomic_write_text,
+                                MAX_UNVERIFIED_PROGRESS as _MAX_UNVERIFIED_PROGRESS)
 except Exception:  # the dashboard must still start if the pipeline module is unavailable
     _pipeline_status_lock = None
+    _MAX_UNVERIFIED_PROGRESS = 90
 
     def _atomic_write_text(path, text):
         """Minimal fallback: unique temp file, replace, brief retry while a reader holds the target."""
@@ -995,12 +997,13 @@ def handle_task_completion(agent_id: str, root_dir: str):
             for a in data.get("agents", []):
                 if a.get("id") == agent_id and a.get("status") == "WORKING":
                     a["status"] = "REVIEWING"
-                    a["progress"] = 100
-                    a["processDetail"] = get_role_stage_message(agent_id, 100)
+                    # A finished run is not a verified result: stay below 100.
+                    a["progress"] = _MAX_UNVERIFIED_PROGRESS
+                    a["processDetail"] = "Tests finished; not independently verified."
                     updated = True
                     break
             if updated:
-                msg = f"Task completed (100%). Status set to REVIEWING."
+                msg = f"Task finished (progress capped at {_MAX_UNVERIFIED_PROGRESS}%; not independently verified). Status set to REVIEWING."
                 if "logs" not in data:
                     data["logs"] = []
                 data["logs"].append({

@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -269,6 +270,27 @@ class DashboardWriters(unittest.TestCase):
         ):
             self.serve.handle_file_event("04_dba", "Saved specs/database/schema.sql", str(self.root))
         self.assertEqual(events, ["lock", "write", "unlock"])
+
+    def test_task_completion_never_reports_100_or_verified(self):
+        self.set_agent("04_dba", status="WORKING", progress=50)
+        self.serve.handle_task_completion("04_dba", str(self.root))
+        agent = self.agent("04_dba")
+        self.assertEqual(agent["status"], "REVIEWING")
+        self.assertEqual(agent["progress"], swarm_pipeline.MAX_UNVERIFIED_PROGRESS)
+        self.assertIn("not independently verified", agent["processDetail"])
+        self.assertNotIn("100", self.read_log())
+
+    def test_task_completion_cannot_push_the_project_to_100(self):
+        for aid in support.AGENT_IDS:
+            self.set_agent(aid, status="WORKING", progress=swarm_pipeline.MAX_UNVERIFIED_PROGRESS)
+        for aid in support.AGENT_IDS:
+            self.serve.handle_task_completion(aid, str(self.root))
+        data = read_status(self.root)
+        self.assertLess(data["project"]["overallProgress"], 100)
+        self.assertTrue(all(a["progress"] < 100 for a in data["agents"]))
+
+    def read_log(self):
+        return (self.root / "specs" / "terminal.log").read_text(encoding="utf-8")
 
     def test_run_record_and_lock_are_not_mistaken_for_agent_work(self):
         self.assertIn("swarm-run.json", self.serve.IGNORE_FILES)
