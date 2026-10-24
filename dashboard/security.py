@@ -3,7 +3,9 @@
 import base64
 import binascii
 import hmac
+import re
 from collections.abc import Mapping
+from typing import NamedTuple
 
 
 _SECRET_FIELD_NAMES = frozenset({
@@ -92,3 +94,54 @@ def public_config(config: Mapping) -> dict:
                 else ("***" if key else "")
             )
     return safe
+
+
+AGENT_STATUSES = frozenset({
+    "IDLE", "WORKING", "WAITING", "REVIEWING", "ERROR", "FAILED",
+})
+MAX_LOG_MESSAGE = 2000
+_AGENT_TAG = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,31}")
+_LINE_BREAKS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]+")
+
+
+def single_line(value: str, limit: int = MAX_LOG_MESSAGE) -> str:
+    """Collapse control characters so one entry can never become several log lines."""
+    return _LINE_BREAKS.sub(" ", value).strip()[:limit]
+
+
+class LogUpdate(NamedTuple):
+    agent: str
+    message: str
+    status: str | None
+    progress: int | None
+
+
+def parse_log_update(payload) -> LogUpdate:
+    """Validate a POST /api/log body; raises ValueError with a safe message.
+
+    The status ends up in swarm-status.json and is rendered by the dashboard, so
+    it must come from a closed set; the agent tag and message end up in the
+    line-oriented terminal log, so they must stay on one line.
+    """
+    if not isinstance(payload, Mapping):
+        raise ValueError("JSON object required")
+    agent = payload.get("agent", "cli")
+    if not isinstance(agent, str) or not _AGENT_TAG.fullmatch(agent):
+        raise ValueError("invalid agent")
+    message = payload.get("message", "")
+    if message is None:
+        message = ""
+    if not isinstance(message, str):
+        raise ValueError("message must be a string")
+    status = payload.get("status")
+    if status is not None and (not isinstance(status, str) or status not in AGENT_STATUSES):
+        raise ValueError("invalid status")
+    progress = payload.get("progress")
+    if progress is not None:
+        if isinstance(progress, bool) or not isinstance(progress, (int, float, str)):
+            raise ValueError("invalid progress")
+        try:
+            progress = max(0, min(100, int(float(progress))))
+        except (ValueError, OverflowError):
+            raise ValueError("invalid progress") from None
+    return LogUpdate(agent, single_line(message), status, progress)

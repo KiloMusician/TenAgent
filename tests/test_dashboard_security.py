@@ -10,7 +10,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dashboard.security import (
+    parse_log_update,
     public_config,
+    single_line,
     valid_local_host,
     valid_mutation_origin,
     valid_operator_authorization,
@@ -98,6 +100,25 @@ class DashboardSecurityTests(unittest.TestCase):
         self.assertNotIn("--dangerously-skip-permissions", server_source)
         self.assertNotIn('"-ExecutionPolicy", "Bypass"', server_source)
         self.assertIn('"ERROR", "Error communicating with AI engine."', server_source)
+
+
+class LogUpdateParsingTests(unittest.TestCase):
+    def test_accepts_the_documented_shape(self):
+        update = parse_log_update(
+            {"agent": "05_backend", "message": " done ", "status": "REVIEWING", "progress": "99"}
+        )
+        self.assertEqual(tuple(update), ("05_backend", "done", "REVIEWING", 99))
+
+    def test_defaults_match_the_original_endpoint(self):
+        self.assertEqual(tuple(parse_log_update({})), ("cli", "", None, None))
+
+    def test_rejects_markup_in_status(self):
+        with self.assertRaises(ValueError):
+            parse_log_update({"status": "<img src=x onerror=alert(1)>"})
+
+    def test_single_line_flattens_every_line_break(self):
+        self.assertEqual(single_line("a\r\nb\nc\u2028d\x00e"), "a b c d e")
+        self.assertEqual(len(single_line("x" * 5000)), 2000)
 
 
 if __name__ == "__main__":

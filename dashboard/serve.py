@@ -23,6 +23,7 @@ if DIRECTORY not in sys.path:
     sys.path.insert(0, DIRECTORY)
 
 from dashboard.security import (
+    parse_log_update,
     public_config,
     valid_local_host,
     valid_mutation_origin,
@@ -1575,11 +1576,9 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
                 return
             try:
-                payload = json.loads(body)
-                agent_id = payload.get('agent', 'cli')
-                message = payload.get('message', '').strip()
-                status = payload.get('status')
-                progress = payload.get('progress')
+                update = parse_log_update(json.loads(body))
+                agent_id, message = update.agent, update.message
+                status, progress = update.status, update.progress
 
                 if message:
                     ts = datetime.datetime.now().strftime("%H:%M:%S")

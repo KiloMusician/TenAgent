@@ -347,6 +347,71 @@ class CommandEndpointTests(DashboardCase):
         self.assertEqual(self.shell_runs, [])
 
 
+class LogEndpointTests(DashboardCase):
+    """POST /api/log feeds swarm-status.json, which the page renders."""
+
+    def log(self, payload):
+        return self.post_json("/api/log", payload, headers=self.same_origin_headers())
+
+    def agent(self, agent_id="01_pm"):
+        return next(a for a in self.read_status()["agents"] if a["id"] == agent_id)
+
+    def test_valid_update_is_applied(self):
+        response = self.log({"agent": "01_pm", "message": "drafting", "status": "WORKING",
+                             "progress": 40})
+        self.assertEqual(response.status, 200)
+        agent = self.agent()
+        self.assertEqual((agent["status"], agent["progress"], agent["processDetail"]),
+                         ("WORKING", 40, "drafting"))
+        self.assertIn("[01_pm] drafting", self.read_log())
+
+    def test_status_is_limited_to_known_values(self):
+        before = self.agent()["status"]
+        for status in ('<img src=x onerror="alert(1)">', 'WORKING" onmouseover="x',
+                       "working", "", "DONE-ish", 5, ["WORKING"], {"a": 1}):
+            with self.subTest(status=status):
+                response = self.log({"agent": "01_pm", "message": "m", "status": status})
+                self.assertEqual(response.status, 400)
+                self.assertEqual(self.agent()["status"], before)
+        stored = (self.root / "specs" / "swarm-status.json").read_text("utf-8")
+        self.assertNotIn("onerror", stored)
+
+    def test_agent_tag_is_a_plain_identifier(self):
+        for agent in ("[founder] ", "a\n[00:00:00] [founder]", "x" * 200, "", 5, None,
+                      "<b>", "../x"):
+            with self.subTest(agent=agent):
+                self.assertEqual(self.log({"agent": agent, "message": "m"}).status, 400)
+        self.assertEqual(self.read_log(), "")
+
+    def test_message_cannot_forge_log_lines(self):
+        forged = "real\r\n[10:00:00] [founder] > fake command\n[10:00:01] [01_pm] fake"
+        self.assertEqual(self.log({"agent": "cli", "message": forged}).status, 200)
+        lines = self.read_log().splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("real", lines[0])
+
+    def test_message_is_length_limited(self):
+        self.assertEqual(self.log({"agent": "cli", "message": "x" * 100_000}).status, 200)
+        self.assertLess(len(self.read_log()), 5_000)
+
+    def test_payload_types_are_validated(self):
+        for payload in ([1], "text", 5, None, {"message": 5}, {"message": ["a"]},
+                        {"progress": "abc"}, {"progress": [1]}, {"progress": {}}):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.log(payload).status, 400)
+
+    def test_progress_is_clamped(self):
+        self.assertEqual(self.log({"agent": "01_pm", "progress": 5000}).status, 200)
+        self.assertEqual(self.agent()["progress"], 100)
+        self.assertEqual(self.log({"agent": "01_pm", "progress": "-7"}).status, 200)
+        self.assertEqual(self.agent()["progress"], 0)
+
+    def test_rejected_request_writes_nothing(self):
+        self.log({"agent": "01_pm", "message": "must-not-appear", "status": "BOGUS"})
+        self.assertNotIn("must-not-appear", self.read_log())
+        self.assertNotEqual(self.agent()["processDetail"], "must-not-appear")
+
+
 class AuthenticatedRouteTests(DashboardCase):
     def test_root_redirects_and_sets_token_cookie(self):
         response = self.get("/")
