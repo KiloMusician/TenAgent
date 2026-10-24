@@ -28,6 +28,7 @@ import time
 import subprocess
 import urllib.request
 import urllib.error
+import urllib.parse
 import re
 import concurrent.futures
 
@@ -1020,6 +1021,11 @@ def handle_file_event(agent_id: str, action_desc: str, root_dir: str):
                 if a.get("id") == agent_id:
                     a["processDetail"] = action_desc
                     a["status"] = "WORKING"
+                    # Invalidate prior completion on file modifications
+                    if a.get("progress", 0) >= 100 or a.get("status") in ("REVIEWING", "COMPLETED"):
+                        a["progress"] = 25
+                    elif a.get("progress", 0) == 0:
+                        a["progress"] = 25
                     updated = True
                     break
             if updated:
@@ -1207,11 +1213,87 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             pass
 
-    def do_GET(self):
-        clean_path = self.path.split('?')[0]
+    def is_valid_host(self) -> bool:
+        host_hdr = self.headers.get('Host', '').strip().lower()
+        if not host_hdr:
+            return True
+        host_name = host_hdr.split(':')[0]
+        return host_name in ('127.0.0.1', 'localhost', '::1', '[::1]')
 
-        # Redirect root to /dashboard/
-        if clean_path == '/' or clean_path == '':
+    def is_authorized_request(self) -> tuple[bool, str]:
+        # 1. Host header validation (prevents DNS rebinding)
+        if not self.is_valid_host():
+            return False, "Forbidden: Invalid Host header"
+
+        # 2. Localhost client IP check
+        client_ip = self.client_address[0] if hasattr(self, 'client_address') and self.client_address else ''
+        if client_ip and client_ip not in ('127.0.0.1', '::1', 'localhost'):
+            return False, "Forbidden: Remote access denied. TenAgent only accepts requests from localhost."
+
+        # 3. Cross-origin validation
+        origin = self.headers.get('Origin', '').strip().lower()
+        if origin:
+            if not (origin.startswith('http://localhost:') or origin.startswith('http://127.0.0.1:') or origin.startswith('http://[::1]:')):
+                return False, "Forbidden: Cross-origin request rejected"
+
+        # 4. Sec-Fetch-Site check
+        sec_fetch = self.headers.get('Sec-Fetch-Site', '').strip().lower()
+        if sec_fetch == 'cross-site':
+            return False, "Forbidden: Cross-site request rejected"
+
+        # 5. Session token / CSRF check
+        req_token = self.headers.get('X-TenAgent-Token', '').strip()
+        if not req_token:
+            cookie_hdr = self.headers.get('Cookie', '')
+            for cookie_part in cookie_hdr.split(';'):
+                if 'tenagent_token=' in cookie_part:
+                    req_token = cookie_part.split('tenagent_token=')[1].strip()
+                    break
+        if not req_token or req_token != _SESSION_TOKEN:
+            return False, "Forbidden: Invalid or missing CSRF session token"
+
+        return True, ""
+
+    def serve_exact_file(self, file_path: str, content_type: str = None):
+        if not os.path.isfile(file_path):
+            self.send_error(404, "Not Found")
+            return
+        try:
+            with open(file_path, "rb") as f:
+                data = f.read()
+            if not content_type:
+                import mimetypes
+                content_type, _ = mimetypes.guess_type(file_path)
+                if not content_type:
+                    content_type = "application/octet-stream"
+            self.send_response(200)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
+            self.send_header('Pragma', 'no-cache')
+            self.send_header('Expires', '0')
+            self.end_headers()
+            self.wfile.write(data)
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            pass
+
+    def do_GET(self):
+        # 1. Host check for all GET requests
+        if not self.is_valid_host():
+            self.send_error(403, "Forbidden: Invalid Host header")
+            return
+
+        # 2. Iteratively decode path (unquotes %2e%2e, %252e, etc.)
+        raw_path = self.path.split('?')[0]
+        unquoted = raw_path
+        for _ in range(3):
+            next_unquoted = urllib.parse.unquote(unquoted)
+            if next_unquoted == unquoted:
+                break
+            unquoted = next_unquoted
+
+        # Root redirect to /dashboard/
+        if unquoted in ('', '/'):
             try:
                 self.send_response(302)
                 self.send_header('Location', '/dashboard/')
@@ -1221,73 +1303,36 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 pass
             return
 
-        if clean_path == '/api/csrf-token':
+        # 3. Path traversal and hidden file checks on decoded path
+        if '..' in unquoted or '/.' in unquoted or '\\' in unquoted or unquoted.startswith('/.'):
+            self.send_error(403, "Access Forbidden: Path traversal or hidden files blocked")
+            return
+
+        lower_unquoted = unquoted.lower()
+        if (lower_unquoted.endswith('.env') or '.env' in lower_unquoted or
+            'swarm-config' in lower_unquoted or
+            lower_unquoted.endswith(('.py', '.bat', '.ps1', '.sh', '.git')) or
+            '/.git' in lower_unquoted):
+            self.send_error(403, "Access Forbidden: Protected system resource")
+            return
+
+        # 4. API endpoints
+        if unquoted == '/api/csrf-token':
+            origin = self.headers.get('Origin', '').strip().lower()
+            if origin and not (origin.startswith('http://localhost:') or origin.startswith('http://127.0.0.1:')):
+                self.send_error(403, "Forbidden: Cross-origin request rejected")
+                return
+            if self.headers.get('Sec-Fetch-Site', '').lower() == 'cross-site':
+                self.send_error(403, "Forbidden: Cross-site request rejected")
+                return
             self.send_json_response({"token": _SESSION_TOKEN})
             return
 
-        if clean_path in ('/favicon.ico', '/dashboard/favicon.ico'):
-            fav_ico = os.path.join(DIRECTORY, "dashboard", "favicon.ico")
-            fav_png = os.path.join(DIRECTORY, "dashboard", "favicon.png")
-            fav_svg = os.path.join(DIRECTORY, "dashboard", "favicon.svg")
-            fav_path = fav_ico if os.path.exists(fav_ico) else (fav_png if os.path.exists(fav_png) else fav_svg)
-            mime = "image/x-icon" if fav_path.endswith('.ico') else ("image/png" if fav_path.endswith('.png') else "image/svg+xml")
-            if os.path.exists(fav_path):
-                try:
-                    with open(fav_path, "rb") as f:
-                        fav_data = f.read()
-                    self.send_response(200)
-                    self.send_header('Content-Type', mime)
-                    self.send_header('Content-Length', str(len(fav_data)))
-                    self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-                    self.send_header('Pragma', 'no-cache')
-                    self.send_header('Expires', '0')
-                    self.end_headers()
-                    self.wfile.write(fav_data)
-                except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-                    pass
-                return
-
-        if clean_path in ('/favicon.png', '/dashboard/favicon.png'):
-            fav_png = os.path.join(DIRECTORY, "dashboard", "favicon.png")
-            if os.path.exists(fav_png):
-                try:
-                    with open(fav_png, "rb") as f:
-                        fav_data = f.read()
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'image/png')
-                    self.send_header('Content-Length', str(len(fav_data)))
-                    self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-                    self.send_header('Pragma', 'no-cache')
-                    self.send_header('Expires', '0')
-                    self.end_headers()
-                    self.wfile.write(fav_data)
-                except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-                    pass
-                return
-
-        if clean_path in ('/favicon.svg', '/dashboard/favicon.svg'):
-            fav_svg = os.path.join(DIRECTORY, "dashboard", "favicon.svg")
-            if os.path.exists(fav_svg):
-                try:
-                    with open(fav_svg, "rb") as f:
-                        fav_data = f.read()
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'image/svg+xml')
-                    self.send_header('Content-Length', str(len(fav_data)))
-                    self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-                    self.send_header('Pragma', 'no-cache')
-                    self.send_header('Expires', '0')
-                    self.end_headers()
-                    self.wfile.write(fav_data)
-                except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-                    pass
-                return
-
-        if clean_path == '/api/cli-status':
+        if unquoted == '/api/cli-status':
             self.send_json_response(get_cached_cli_status(DIRECTORY))
             return
 
-        if clean_path == '/api/config':
+        if unquoted == '/api/config':
             cfg = {"engine": "native", "providers": []}
             cfg_file = os.path.join(SPECS_DIR, "swarm-config.json")
             if not os.path.exists(cfg_file):
@@ -1315,7 +1360,6 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                                     p["key_masked"] = k[:4] + "..." + k[-4:] if len(k) > 8 else "***"
                                 else:
                                     p["key_masked"] = ""
-                                # CRITICAL SECURITY: Never return plaintext key in HTTP response!
                                 p.pop("key", None)
                             if probe_changed:
                                 safe_write_json(cfg_file, cfg)
@@ -1325,28 +1369,85 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json_response(cfg)
             return
 
-        # Whitelist and Path Sanitization (Zero .env, zero config, zero path traversal leak)
-        if '..' in clean_path or '/.' in clean_path or clean_path.startswith('/.'):
-            self.send_error(403, "Access Forbidden: Path traversal or hidden files blocked")
+        # 5. Exact system specs deliverables
+        if unquoted == '/specs/swarm-status.json':
+            self.serve_exact_file(STATUS_FILE, "application/json")
             return
 
-        lower_path = clean_path.lower()
-        if lower_path.endswith('.env') or 'swarm-config' in lower_path or lower_path.endswith(('.py', '.bat', '.ps1', '.sh', '.git')):
-            self.send_error(403, "Access Forbidden: Protected system resource")
+        if unquoted == '/specs/terminal.log':
+            self.serve_exact_file(LOG_FILE, "text/plain; charset=utf-8")
             return
 
-        allowed_prefixes = ('/dashboard/', '/assets/', '/specs/swarm-status.json', '/specs/terminal.log', '/favicon.')
-        if not any(clean_path.startswith(p) for p in allowed_prefixes) and clean_path not in ('/dashboard', '/'):
-            self.send_error(404, "Not Found")
+        # 6. Favicons
+        if unquoted in ('/favicon.ico', '/dashboard/favicon.ico'):
+            fav_ico = os.path.join(DIRECTORY, "dashboard", "favicon.ico")
+            fav_png = os.path.join(DIRECTORY, "dashboard", "favicon.png")
+            fav_svg = os.path.join(DIRECTORY, "dashboard", "favicon.svg")
+            fav_path = fav_ico if os.path.exists(fav_ico) else (fav_png if os.path.exists(fav_png) else fav_svg)
+            mime = "image/x-icon" if fav_path.endswith('.ico') else ("image/png" if fav_path.endswith('.png') else "image/svg+xml")
+            self.serve_exact_file(fav_path, mime)
             return
 
-        try:
-            super().do_GET()
-        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-            pass
+        if unquoted in ('/favicon.png', '/dashboard/favicon.png'):
+            fav_png = os.path.join(DIRECTORY, "dashboard", "favicon.png")
+            self.serve_exact_file(fav_png, "image/png")
+            return
+
+        if unquoted in ('/favicon.svg', '/dashboard/favicon.svg'):
+            fav_svg = os.path.join(DIRECTORY, "dashboard", "favicon.svg")
+            self.serve_exact_file(fav_svg, "image/svg+xml")
+            return
+
+        # 7. Dashboard static assets (strictly bounded within DIRECTORY/dashboard)
+        if unquoted == '/dashboard' or unquoted == '/dashboard/':
+            index_path = os.path.join(DIRECTORY, "dashboard", "index.html")
+            self.serve_exact_file(index_path, "text/html; charset=utf-8")
+            return
+
+        if unquoted.startswith('/dashboard/'):
+            rel = unquoted[len('/dashboard/'):].lstrip('/')
+            target_path = os.path.normpath(os.path.join(DIRECTORY, "dashboard", rel))
+            dashboard_dir = os.path.normpath(os.path.join(DIRECTORY, "dashboard"))
+            try:
+                if os.path.commonpath([target_path, dashboard_dir]) != dashboard_dir:
+                    self.send_error(403, "Access Forbidden")
+                    return
+            except ValueError:
+                self.send_error(403, "Access Forbidden")
+                return
+            if os.path.isdir(target_path):
+                target_path = os.path.join(target_path, "index.html")
+            self.serve_exact_file(target_path)
+            return
+
+        # 8. Assets directory (strictly bounded within DIRECTORY/assets)
+        if unquoted.startswith('/assets/'):
+            rel = unquoted[len('/assets/'):].lstrip('/')
+            target_path = os.path.normpath(os.path.join(DIRECTORY, "assets", rel))
+            assets_dir = os.path.normpath(os.path.join(DIRECTORY, "assets"))
+            try:
+                if os.path.commonpath([target_path, assets_dir]) != assets_dir:
+                    self.send_error(403, "Access Forbidden")
+                    return
+            except ValueError:
+                self.send_error(403, "Access Forbidden")
+                return
+            self.serve_exact_file(target_path)
+            return
+
+        # 9. No super().do_GET() fallback - strictly return 404 for any unregistered path
+        self.send_error(404, "Not Found")
 
     def do_POST(self):
-        if self.path == '/api/config':
+        # Universal Authorization Gate for all mutating API routes
+        auth_ok, auth_err = self.is_authorized_request()
+        if not auth_ok:
+            self.send_json_response({"error": auth_err}, 403)
+            return
+
+        clean_path = self.path.split('?')[0]
+
+        if clean_path == '/api/config':
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(content_length).decode('utf-8')
@@ -1358,14 +1459,18 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 
                 cfg_file = os.path.join(SPECS_DIR, "swarm-config.json")
                 existing_keys = {}
+                existing_base_urls = {}
                 if os.path.exists(cfg_file):
                     try:
                         with open(cfg_file, "r", encoding="utf-8") as f:
                             saved_cfg = json.load(f)
                             for sp in saved_cfg.get("providers", []):
                                 sp_id = sp.get("provider", "")
-                                if sp_id and sp.get("key"):
-                                    existing_keys[sp_id] = sp.get("key")
+                                if sp_id:
+                                    if sp.get("key"):
+                                        existing_keys[sp_id] = sp.get("key")
+                                    if sp.get("baseUrl") or sp.get("base_url"):
+                                        existing_base_urls[sp_id] = sp.get("baseUrl") or sp.get("base_url")
                     except Exception:
                         pass
 
@@ -1376,6 +1481,9 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                     if ("..." in k or k == "***") and p_id in existing_keys:
                         k = existing_keys[p_id]
                         p_entry["key"] = k
+                        if not b_url and p_id in existing_base_urls:
+                            b_url = existing_base_urls[p_id]
+                            p_entry["baseUrl"] = b_url
                     
                     if b_url:
                         p_entry["baseUrl"] = b_url
@@ -1415,7 +1523,7 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json_response({"error": str(e)}, 400)
                 return
 
-        if self.path.startswith('/api/models'):
+        if clean_path.startswith('/api/models'):
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(content_length).decode('utf-8')
@@ -1423,18 +1531,27 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 p_id = (payload.get("provider") or "").strip()
                 k = (payload.get("key") or "").strip()
                 b_url = (payload.get("baseUrl") or payload.get("base_url") or "").strip()
-                if ("..." in k or k == "***"):
+
+                if ("..." in k or k == "***" or not k):
+                    stored_p = None
                     cfg_file = os.path.join(SPECS_DIR, "swarm-config.json")
                     if os.path.exists(cfg_file):
                         try:
                             with open(cfg_file, "r", encoding="utf-8") as f:
                                 scfg = json.load(f)
                                 for sp in scfg.get("providers", []):
-                                    if sp.get("provider") == p_id and sp.get("key"):
-                                        k = sp.get("key")
+                                    if sp.get("provider") == p_id:
+                                        stored_p = sp
                                         break
                         except Exception:
                             pass
+                    if not stored_p or not stored_p.get("key"):
+                        self.send_json_response({"status": "empty", "valid": False, "statusDetail": "No Stored Key", "models": []})
+                        return
+                    k = stored_p.get("key")
+                    # CRITICAL SECURITY: Bind strictly to stored provider's own baseUrl to prevent SSRF
+                    b_url = (stored_p.get("baseUrl") or stored_p.get("base_url") or "").strip()
+
                 ver = verify_ai_provider_key(p_id, k, base_url=b_url)
                 self.send_json_response(ver)
                 return
@@ -1442,34 +1559,7 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json_response({"status": "error", "valid": False, "models": [], "error": str(e)}, 400)
                 return
 
-        if self.path == '/api/command':
-            # Security Check 1: Must originate from localhost
-            client_ip = self.client_address[0] if hasattr(self, 'client_address') and self.client_address else ''
-            if client_ip not in ('127.0.0.1', '::1', 'localhost'):
-                self.send_json_response({"error": "Forbidden: Remote access denied. TenAgent only accepts commands from localhost."}, 403)
-                return
-
-            # Security Check 2: Block cross-site origins
-            origin = self.headers.get('Origin', '')
-            if origin and not (origin.startswith('http://localhost:') or origin.startswith('http://127.0.0.1:')):
-                self.send_json_response({"error": "Forbidden: Cross-origin request rejected"}, 403)
-                return
-            if self.headers.get('Sec-Fetch-Site') == 'cross-site':
-                self.send_json_response({"error": "Forbidden: Cross-site request rejected"}, 403)
-                return
-
-            # Security Check 3: CSRF Session Token verification
-            req_token = self.headers.get('X-TenAgent-Token', '').strip()
-            if not req_token:
-                cookie_hdr = self.headers.get('Cookie', '')
-                for cookie_part in cookie_hdr.split(';'):
-                    if 'tenagent_token=' in cookie_part:
-                        req_token = cookie_part.split('tenagent_token=')[1].strip()
-                        break
-            if not req_token or req_token != _SESSION_TOKEN:
-                self.send_json_response({"error": "Forbidden: Invalid or missing CSRF session token"}, 403)
-                return
-
+        if clean_path == '/api/command':
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(content_length).decode('utf-8')
@@ -1548,7 +1638,7 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json_response({"error": str(e)}, 400)
                 return
 
-        if self.path == '/api/log':
+        if clean_path == '/api/log':
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(content_length).decode('utf-8')

@@ -419,10 +419,15 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
         "covering Happy Path, Edge Cases, Boundary Limits, and Concurrency Scenarios. Output clean Markdown."
     )
     qa_raw, ok = safe_call_brain(b_qa, qa_sys, f"Goal: {goal}\nAPI Contract:\n{api_clean[:1200]}\nBackend Code:\n{code_clean[:1200]}", providers, base_dir)
+    if not ok or not (qa_raw or "").strip():
+        log_swarm_message("07_qa", f"[FATAL ERROR] Brain [{b_qa['name']}] failed to formulate QA test matrix.", base_dir)
+        update_swarm_status("07_qa", "WAITING", f"Failed to formulate QA test matrix with {b_qa['name']}", 0, base_dir, phase="FAILED: QA Matrix Generation Error")
+        return False
+
     qa_dir = os.path.join(base_dir, "specs", "qa")
     os.makedirs(qa_dir, exist_ok=True)
     with open(os.path.join(qa_dir, "test-matrix.md"), "w", encoding="utf-8") as f:
-        f.write((qa_raw or f"# Test Matrix for {goal}\n\n- TC01: Contract Validation\n- TC02: Edge Cases\n").strip() + "\n")
+        f.write(qa_raw.strip() + "\n")
 
     # Generate executable test file
     test_code_sys = (
@@ -430,19 +435,46 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
         "testing the domain entity constraints, input boundaries, and error cases from the backend implementation. "
         "Only output pure valid Python code inside a markdown ```python block."
     )
-    test_code_raw, _ = safe_call_brain(b_qa, test_code_sys, f"Goal: {goal}\nBackend Code:\n{code_clean[:1500]}", providers, base_dir)
+    test_code_raw, test_ok = safe_call_brain(b_qa, test_code_sys, f"Goal: {goal}\nBackend Code:\n{code_clean[:1500]}", providers, base_dir)
     test_clean = clean_markdown_block(test_code_raw, "python")
-    if not test_clean:
-        test_clean = "import unittest\n\nclass TestApp(unittest.TestCase):\n    def test_domain_entity(self):\n        self.assertTrue(True)\n\nif __name__ == '__main__':\n    unittest.main()\n"
+    if not test_ok or not test_clean:
+        log_swarm_message("07_qa", f"[FATAL ERROR] Brain [{b_qa['name']}] failed to generate executable unit tests.", base_dir)
+        update_swarm_status("07_qa", "WAITING", "Failed to generate valid Python unit tests.", 0, base_dir, phase="FAILED: Test Suite Generation Error")
+        return False
 
     tests_dir = os.path.join(base_dir, "tests")
     os.makedirs(tests_dir, exist_ok=True)
+    init_file = os.path.join(tests_dir, "__init__.py")
+    if not os.path.exists(init_file):
+        with open(init_file, "w", encoding="utf-8") as f:
+            f.write("")
     with open(os.path.join(tests_dir, "test_api.py"), "w", encoding="utf-8") as f:
         f.write(test_clean.strip() + "\n")
 
+    # Execute test suite to verify tests pass
+    log_swarm_message("07_qa", "Executing automated test suite: python -m unittest discover tests ...", base_dir)
+    try:
+        test_proc = subprocess.run(
+            [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+            cwd=base_dir,
+            capture_output=True,
+            text=True,
+            timeout=15
+        )
+        if test_proc.returncode != 0:
+            err_output = (test_proc.stderr or test_proc.stdout or "").strip()
+            log_swarm_message("07_qa", f"[TEST FAILURE] Unit test runner reported failures:\n{err_output[:300]}", base_dir)
+            update_swarm_status("07_qa", "WAITING", "Test execution failed. Unit tests reported failures or syntax errors.", 50, base_dir, phase="FAILED: QA Unit Tests Failed")
+            return False
+        log_swarm_message("07_qa", "Automated test suite passed with zero regressions.", base_dir)
+    except Exception as e:
+        log_swarm_message("07_qa", f"[TEST RUNNER ERROR] Could not execute tests: {str(e)}", base_dir)
+        update_swarm_status("07_qa", "WAITING", f"Test runner error: {str(e)}", 0, base_dir, phase="FAILED: QA Test Runner Error")
+        return False
+
     completed_milestones += 1
     log_swarm_message("07_qa", "Deliverables locked: specs/qa/test-matrix.md & tests/test_api.py", base_dir)
-    update_swarm_status("07_qa", "REVIEWING", "QA test fixtures compiled and ready for runner.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
+    update_swarm_status("07_qa", "REVIEWING", "QA test fixtures compiled and passing.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
     time.sleep(0.5)
 
     # -------------------------------------------------------------
@@ -459,10 +491,15 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
         "For each category, provide status (PASS / WARN / FAIL) with concrete line references and remediation notes. Output clean Markdown."
     )
     sec_raw, ok = safe_call_brain(b_sec, sec_sys, f"Backend Code:\n{code_clean[:1800]}\n\nDatabase Schema:\n{sql_clean[:1200]}", providers, base_dir)
+    if not ok or not (sec_raw or "").strip():
+        log_swarm_message("08_security", f"[FATAL ERROR] Brain [{b_sec['name']}] failed to complete OWASP security audit.", base_dir)
+        update_swarm_status("08_security", "WAITING", "Security audit generation failed.", 0, base_dir, phase="FAILED: Security Audit Error")
+        return False
+
     sec_dir = os.path.join(base_dir, "specs", "security")
     os.makedirs(sec_dir, exist_ok=True)
     with open(os.path.join(sec_dir, "audit-report.md"), "w", encoding="utf-8") as f:
-        f.write((sec_raw or "# Security Audit Report\n\n- OWASP Top 10: Inspected\n- Secret Zero-Leak: Pass\n").strip() + "\n")
+        f.write(sec_raw.strip() + "\n")
 
     completed_milestones += 1
     log_swarm_message("08_security", "Deliverable locked: specs/security/audit-report.md (Code audit completed)", base_dir)
@@ -532,28 +569,23 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
     )
     review_context = f"Project: {goal}\nPRD:\n{prd_content[:600]}\nADR:\n{arch_content[:600]}\nBackend:\n{code_clean[:800]}\nSecurity:\n{sec_raw[:600] if 'sec_raw' in locals() else 'Passed'}"
     lead_raw, ok = safe_call_brain(b_lead, lead_sys, review_context, providers, base_dir)
+    if not ok or not (lead_raw or "").strip():
+        log_swarm_message("10_tech_lead", f"[FATAL ERROR] Brain [{b_lead['name']}] failed to produce signoff review.", base_dir)
+        update_swarm_status("10_tech_lead", "WAITING", "Tech lead signoff review failed to generate.", 0, base_dir, phase="FAILED: Quality Gate Evaluation Error")
+        return False
 
+    final_signoff = lead_raw.strip()
     signoff_path = os.path.join(base_dir, "specs", "signoff.md")
-    if ok and lead_raw.strip():
-        final_signoff = lead_raw.strip()
-    else:
-        final_signoff = (
-            f"# Technical Lead Signoff\n\n"
-            f"**Project Goal:** {goal}\n"
-            f"**Evaluation Date:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"**Lead AI Evaluator:** {b_lead['name']}\n\n"
-            "## Quality Gates Evaluation Summary\n"
-            "- [x] Gate 1: PRD User Stories locked (`specs/prd/user-stories.md`)\n"
-            "- [x] Gate 2: Clean Architecture ADR-001 approved (`specs/architecture/adr-001.md`)\n"
-            "- [x] Gate 3: 3NF Database Schema & OpenAPI 3.0 verified (`specs/database/schema.sql`, `specs/api/openapi.yaml`)\n"
-            "- [x] Gate 4: Backend domain implementation verified (`backend/src/main.py`)\n"
-            "- [x] Gate 5: Client view components & tokens aligned (`frontend/`, `specs/design/`)\n"
-            "- [x] Gate 6: Executable unit tests & OWASP security review completed (`tests/`, `specs/security/`)\n\n"
-            "**Official Verdict:** APPROVED FOR PRODUCTION\n"
-        )
-
     with open(signoff_path, "w", encoding="utf-8") as f:
         f.write(final_signoff + "\n")
+
+    # Critical gatekeeper evaluation: do not allow fail-open release
+    lead_upper = final_signoff.upper()
+    is_rejected = any(rej in lead_upper for rej in ("REJECTED", "NOT APPROVED", "REMEDIATION REQUIRED", "DO NOT DEPLOY", "FAILED GATE"))
+    if is_rejected:
+        log_swarm_message("10_tech_lead", "[REJECTED] Tech Lead identified quality gate failures. Code is NOT approved for production.", base_dir)
+        update_swarm_status("10_tech_lead", "WAITING", "Deliverables REJECTED by Technical Lead. Remediation required.", 50, base_dir, phase="REJECTED: Quality Gate Failed")
+        return False
 
     completed_milestones += 1
     log_swarm_message("10_tech_lead", "[APPROVED] All 10 engineering agents completed tasks with verified deliverables.", base_dir)

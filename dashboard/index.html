@@ -3803,7 +3803,10 @@
       try {
         const res = await fetch('/api/models', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-TenAgent-Token': window.__TENAGENT_TOKEN__ || ''
+          },
           body: JSON.stringify({ provider: pId, key: keyVal, baseUrl: urlVal })
         });
         if (res.ok) {
@@ -4034,7 +4037,10 @@
       try {
         const res = await fetch('/api/config', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-TenAgent-Token': window.__TENAGENT_TOKEN__ || ''
+          },
           body: JSON.stringify(payload)
         });
         const data = await res.json();

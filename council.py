@@ -311,6 +311,9 @@ def run_council_debate(topic: str, root_dir: str = None) -> dict:
         )
         try:
             review = call_llm(p, sys_prompt, f"Review and critique this task/architecture:\n{topic}")
+            if not review or not review.strip():
+                log_council_message(prof["tag"], f"[FAILED] {p['name']} returned an empty review.", root_dir)
+                return {"status": "failed", "error": "Empty response from provider"}
             for line in review.split("\n"):
                 if line.strip():
                     log_council_message(prof["tag"], line.strip(), root_dir)
@@ -387,26 +390,43 @@ def run_council_debate(topic: str, root_dir: str = None) -> dict:
             "consensus": None
         }
 
+    status = "debated"
     if c_ok and d_ok:
-        verdict = (
-            f"Council Consensus reached between {challenger['name']} and {defender['name']}. "
-            "Key edge cases mitigated. Proceeding to execution."
-        )
+        comb = (critique + " " + defense).upper()
+        conflict_terms = [
+            "REJECT", "DISAGREE", "DO NOT PROCEED", "VETO", "UNACCEPTABLE",
+            "FATAL FLAW", "STRONGLY OPPOSE", "CANNOT APPROVE", "OBJECTION",
+            "I DISAGREE", "NOT READY", "FUNDAMENTAL FLAW"
+        ]
+        if any(term in comb for term in conflict_terms):
+            verdict = (
+                f"Council Disagreement: Active objections or conflicting stances detected between {challenger['name']} and {defender['name']}. "
+                "No consensus reached. Remediation required before execution."
+            )
+            status = "conflict"
+        else:
+            verdict = (
+                f"Council Consensus reached between {challenger['name']} and {defender['name']}. "
+                "Key edge cases mitigated. Proceeding to execution."
+            )
     elif d_ok:
         verdict = f"Council partial consensus: {defender['name']} formulated architectural mitigations (Challenger was offline)."
+        status = "partial"
     else:
         verdict = f"Council partial consensus: {challenger['name']} identified key risk factors (Defender was offline)."
+        status = "partial"
 
     log_council_message("council_verdict", verdict, root_dir)
     log_council_message("council", "=== Council Session Concluded. Swarm executing consensus. ===", root_dir)
 
     return {
-        "status": "debated",
+        "status": status,
         "challenger": challenger["name"],
         "critique": critique,
         "defender": defender["name"],
         "defense": defense,
-        "consensus": verdict
+        "consensus": verdict if status in ("debated", "partial") else None,
+        "verdict": verdict
     }
 
 if __name__ == "__main__":
@@ -422,4 +442,6 @@ if __name__ == "__main__":
         for p in active:
             print(f" - [{p['id']}] {p['name']} -> Role: {p['profile']['role']}")
     elif args.command == "debate":
-        run_council_debate(args.topic)
+        res = run_council_debate(args.topic)
+        if isinstance(res, dict) and res.get("status") in ("failed", "error"):
+            sys.exit(1)

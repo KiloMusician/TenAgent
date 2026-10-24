@@ -3,7 +3,7 @@
     "name": "TenAgent Swarm Workspace",
     "version": "1.0.1",
     "phase": "Phase 1: Discovery & Requirements",
-    "overallProgress": 10,
+    "overallProgress": 0,
     "lastUpdated": "2026-10-21T23:00:00Z"
   },
   "agents": [
@@ -46,10 +46,10 @@
     {
       "id": "05_backend",
       "role": "Backend Engineer",
-      "status": "REVIEWING",
+      "status": "WAITING",
       "currentTask": "Waiting for OpenAPI contract and database schema lock.",
-      "processDetail": "Backend services compiled and verified against specifications.",
-      "progress": 100,
+      "processDetail": "Standby to scaffold backend services and domain entities.",
+      "progress": 0,
       "deliverable": "backend/"
     },
     {
