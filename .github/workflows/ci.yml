@@ -23,6 +23,9 @@ jobs:
         run: |
           python -m py_compile council.py stream.py swarm_pipeline.py dashboard/serve.py setup_project.py
 
+      - name: Test swarm failure handling
+        run: python -m unittest discover -s tests -p "test_swarm_fail_closed.py" -v
+
       - name: Validate Swarm State & Specification Integrity
         run: |
           python -c "import json; json.load(open('specs/swarm-status.json')); json.load(open('specs/swarm-config.example.json'))"
