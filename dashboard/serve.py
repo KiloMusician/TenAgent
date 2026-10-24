@@ -30,6 +30,42 @@ import urllib.request
 import urllib.error
 import re
 import concurrent.futures
+import contextlib
+import tempfile
+
+try:
+    from swarm_pipeline import (status_lock as _pipeline_status_lock, atomic_write_text as _atomic_write_text,
+                                MAX_UNVERIFIED_PROGRESS as _MAX_UNVERIFIED_PROGRESS)
+except Exception:  # the dashboard must still start if the pipeline module is unavailable
+    _pipeline_status_lock = None
+    _MAX_UNVERIFIED_PROGRESS = 90
+
+    def _atomic_write_text(path, text):
+        """Minimal fallback: unique temp file, replace, brief retry while a reader holds the target."""
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), prefix=os.path.basename(path) + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+            for attempt in range(6):
+                try:
+                    os.replace(tmp, path)
+                    return
+                except PermissionError:
+                    if attempt == 5:
+                        raise
+                    time.sleep(0.02 * (attempt + 1))
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+
+def status_guard(path: str):
+    """The lock the pipeline holds while it rewrites swarm-status.json (in-process only)."""
+    return _pipeline_status_lock(path) if _pipeline_status_lock else contextlib.nullcontext()
+
 
 SPECS_DIR = os.path.join(DIRECTORY, "specs")
 LOG_FILE = os.path.join(SPECS_DIR, "terminal.log")
@@ -68,21 +104,29 @@ def append_to_terminal_log(agent: str, text: str):
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"[{ts}] [{agent}] {clean}\n")
 
-def safe_write_json(filepath: str, data: dict):
-    try:
-        tmp_path = filepath + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, filepath)
-    except Exception:
-        pass
+def _warn(message: str):
+    print(f"[dashboard] WARNING: {message}", file=sys.stderr)
 
-def set_agent_status_direct(agent_id: str, status: str, process_detail: str, progress: int = None):
+
+def safe_write_json(filepath: str, data: dict) -> bool:
+    """Atomic JSON write (unique temp file, retry while a reader holds the target).
+
+    Returns False and says so on stderr when the write fails; the old file is left untouched.
+    """
     try:
-        if os.path.exists(STATUS_FILE):
-            with open(STATUS_FILE, "r", encoding="utf-8") as f:
+        _atomic_write_text(filepath, json.dumps(data, indent=2))
+        return True
+    except Exception as exc:
+        _warn(f"could not write {os.path.basename(filepath)} ({type(exc).__name__}); on-disk state is unchanged")
+        return False
+
+def set_agent_status_direct(agent_id: str, status: str, process_detail: str, progress: int = None) -> bool:
+    try:
+        if not os.path.exists(STATUS_FILE):
+            return False
+        with status_guard(STATUS_FILE):
+            with open(STATUS_FILE, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
-            updated = False
             for a in data.get("agents", []):
                 if a.get("id") == agent_id:
                     a["status"] = status
@@ -90,12 +134,11 @@ def set_agent_status_direct(agent_id: str, status: str, process_detail: str, pro
                         a["processDetail"] = process_detail
                     if progress is not None:
                         a["progress"] = progress
-                    updated = True
-                    break
-            if updated:
-                safe_write_json(STATUS_FILE, data)
-    except Exception:
-        pass
+                    return safe_write_json(STATUS_FILE, data)
+        return False
+    except Exception as exc:
+        _warn(f"could not update {agent_id} in swarm-status.json ({type(exc).__name__})")
+        return False
 
 def run_powershell_subprocess(cmd: str, root_dir: str):
     def worker():
@@ -163,12 +206,13 @@ def run_agy_prompt(prompt: str, root_dir: str):
             code = proc.wait()
             if code != 0:
                 append_to_terminal_log("01_pm", f"Process exited with code {code}")
+                set_agent_status_direct("01_pm", "ERROR", f"AI engine exited with code {code}.", progress=0)
             else:
                 append_to_terminal_log("01_pm", "Response completed.")
-            set_agent_status_direct("01_pm", "IDLE", "Standing by for founder requests.", progress=100)
+                set_agent_status_direct("01_pm", "IDLE", "Standing by for founder requests.", progress=100)
         except Exception as e:
             append_to_terminal_log("01_pm", f"Error communicating with agy: {str(e)}")
-            set_agent_status_direct("01_pm", "IDLE", "Error communicating with AI engine.", progress=100)
+            set_agent_status_direct("01_pm", "ERROR", "Error communicating with AI engine.", progress=0)
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -803,19 +847,13 @@ IGNORE_DIRS = {
 }
 IGNORE_FILES = {
     "terminal.log", "swarm-status.json", "swarm-status.json.tmp",
+    "swarm-run.json", ".swarm-run.lock", "signoff.rejected.md",
     "test-matrix.md", "audit-report.md", "signoff.md"
 }
 
 AUTO_GENERATED_FILES = set()
 
-def safe_write_json(filepath: str, data: dict):
-    try:
-        tmp_path = filepath + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, filepath)
-    except Exception:
-        pass
+# safe_write_json is defined once, near the top of this module.
 
 def detect_agent_from_file_path(rel_path: str) -> str:
     norm = rel_path.replace("\\", "/").lower()
@@ -959,12 +997,13 @@ def handle_task_completion(agent_id: str, root_dir: str):
             for a in data.get("agents", []):
                 if a.get("id") == agent_id and a.get("status") == "WORKING":
                     a["status"] = "REVIEWING"
-                    a["progress"] = 100
-                    a["processDetail"] = get_role_stage_message(agent_id, 100)
+                    # A finished run is not a verified result: stay below 100.
+                    a["progress"] = _MAX_UNVERIFIED_PROGRESS
+                    a["processDetail"] = "Tests finished; not independently verified."
                     updated = True
                     break
             if updated:
-                msg = f"Task completed (100%). Status set to REVIEWING."
+                msg = f"Task finished (progress capped at {_MAX_UNVERIFIED_PROGRESS}%; not independently verified). Status set to REVIEWING."
                 if "logs" not in data:
                     data["logs"] = []
                 data["logs"].append({
@@ -990,8 +1029,8 @@ def handle_task_completion(agent_id: str, root_dir: str):
                     data["project"]["overallProgress"] = int(total_p / len(data["agents"]))
 
                 safe_write_json(status_file, data)
-    except Exception:
-        pass
+    except Exception as exc:
+        _warn(f"could not update swarm-status.json after a task completion ({type(exc).__name__})")
 
 def handle_file_event(agent_id: str, action_desc: str, root_dir: str):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
@@ -1013,33 +1052,37 @@ def handle_file_event(agent_id: str, action_desc: str, root_dir: str):
     # 2. Update swarm-status.json with dynamic progress
     try:
         if os.path.exists(status_file):
-            with open(status_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            updated = False
-            for a in data.get("agents", []):
-                if a.get("id") == agent_id:
-                    a["processDetail"] = action_desc
-                    a["status"] = "WORKING"
-                    updated = True
-                    break
-            if updated:
-                if "logs" not in data:
-                    data["logs"] = []
-                data["logs"].append({
-                    "timestamp": ts,
-                    "agent": agent_id,
-                    "message": f"[{agent_id}] {action_desc}"
-                })
-                data["logs"] = data["logs"][-50:]
-                
-                # Update overall project progress
-                if "project" in data and "agents" in data:
-                    total_p = sum(ag.get("progress", 0) for ag in data["agents"])
-                    data["project"]["overallProgress"] = int(total_p / len(data["agents"]))
+            with status_guard(status_file):
+                with open(status_file, "r", encoding="utf-8-sig") as f:
+                    data = json.load(f)
+                updated = False
+                for a in data.get("agents", []):
+                    if a.get("id") == agent_id:
+                        # A failed stage stays failed: the file the stage wrote just before
+                        # failing must not flip it back to WORKING and hide the failure.
+                        if a.get("status") != "ERROR":
+                            a["processDetail"] = action_desc
+                            a["status"] = "WORKING"
+                            updated = True
+                        break
+                if updated:
+                    if "logs" not in data:
+                        data["logs"] = []
+                    data["logs"].append({
+                        "timestamp": ts,
+                        "agent": agent_id,
+                        "message": f"[{agent_id}] {action_desc}"
+                    })
+                    data["logs"] = data["logs"][-50:]
 
-                safe_write_json(status_file, data)
-    except Exception:
-        pass
+                    # Update overall project progress
+                    if "project" in data and "agents" in data:
+                        total_p = sum(ag.get("progress", 0) for ag in data["agents"])
+                        data["project"]["overallProgress"] = int(total_p / len(data["agents"]))
+
+                    safe_write_json(status_file, data)
+    except Exception as exc:
+        _warn(f"could not update swarm-status.json after a file event ({type(exc).__name__})")
 
 def start_workspace_watcher(root_dir: str):
     def watcher_loop():
@@ -1113,19 +1156,20 @@ def start_workspace_watcher(root_dir: str):
                         del last_activity_time[aid]
                         if os.path.exists(status_file):
                             try:
-                                with open(status_file, "r", encoding="utf-8") as f:
-                                    sdata = json.load(f)
-                                changed = False
-                                for a in sdata.get("agents", []):
-                                    if a.get("id") == aid and a.get("status") == "WORKING":
-                                        a["status"] = "IDLE"
-                                        a["processDetail"] = "Standing by for founder instructions."
-                                        changed = True
-                                if changed:
-                                    safe_write_json(status_file, sdata)
-                                    prev_status_mtime = os.path.getmtime(status_file)
-                            except Exception:
-                                pass
+                                with status_guard(status_file):
+                                    with open(status_file, "r", encoding="utf-8-sig") as f:
+                                        sdata = json.load(f)
+                                    changed = False
+                                    for a in sdata.get("agents", []):
+                                        if a.get("id") == aid and a.get("status") == "WORKING":
+                                            a["status"] = "IDLE"
+                                            a["processDetail"] = "Standing by for founder instructions."
+                                            changed = True
+                                    if changed:
+                                        safe_write_json(status_file, sdata)
+                                        prev_status_mtime = os.path.getmtime(status_file)
+                            except Exception as exc:
+                                _warn(f"could not reset an idle agent in swarm-status.json ({type(exc).__name__})")
 
                 # 3. Workspace filesystem watcher for all project code and specs
                 for root, dirs, files in os.walk(root_dir):
@@ -1569,20 +1613,21 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
 
                 if os.path.exists(STATUS_FILE) and (status or progress is not None or message):
                     try:
-                        with open(STATUS_FILE, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                        for a in data.get("agents", []):
-                            if a.get("id") == agent_id:
-                                if message:
-                                    a["processDetail"] = message
-                                if status:
-                                    a["status"] = status
-                                if progress is not None:
-                                    a["progress"] = max(0, min(100, int(progress)))
-                                break
-                        safe_write_json(STATUS_FILE, data)
-                    except Exception:
-                        pass
+                        with status_guard(STATUS_FILE):
+                            with open(STATUS_FILE, "r", encoding="utf-8-sig") as f:
+                                data = json.load(f)
+                            for a in data.get("agents", []):
+                                if a.get("id") == agent_id:
+                                    if message:
+                                        a["processDetail"] = message
+                                    if status:
+                                        a["status"] = status
+                                    if progress is not None:
+                                        a["progress"] = max(0, min(100, int(progress)))
+                                    break
+                            safe_write_json(STATUS_FILE, data)
+                    except Exception as exc:
+                        _warn(f"could not update swarm-status.json from /api/log ({type(exc).__name__})")
 
                 self.send_json_response({"ok": True})
                 return

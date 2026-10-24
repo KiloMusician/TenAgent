@@ -33,8 +33,9 @@ Activate this skill whenever the user instructs the assistant to build, scaffold
      * `specs/api/openapi.yaml`
      * `specs/qa/test-matrix.md`
      * `specs/security/audit-report.md`
-     * `specs/signoff.md`
+     * `specs/signoff.md` (advisory model review, written only for a cleared review; a rejected one goes to `specs/signoff.rejected.md`)
    - Streams real-time thoughts to `specs/terminal.log` and updates `specs/swarm-status.json`.
+   - Records the outcome in `specs/swarm-run.json`. The command exits 0 only when a draft was generated (`AWAITING_VERIFICATION`); on any non-zero exit the draft is incomplete, so report the failure and stop. The files are model output, not verified evidence.
 
 3. **Downstream Implementation & Test Verification**:
    - Inspect the generated contracts in `specs/`.
