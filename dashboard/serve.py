@@ -17,6 +17,8 @@ _SESSION_TOKEN = secrets.token_hex(24)
 _DASHBOARD_PASSWORD = os.environ.get('TENAGENT_DASHBOARD_PASSWORD') or secrets.token_urlsafe(24)
 
 DEFAULT_PORT = 7777
+AUTH_FAILURE_DELAY = 0.5  # seconds a wrong Authorization header waits before the 401
+MIN_RECOMMENDED_PASSWORD_LENGTH = 12
 MAX_PORT_ATTEMPTS = 50
 DIRECTORY = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if DIRECTORY not in sys.path:
@@ -1267,6 +1269,10 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
         if not valid_operator_authorization(
             self.headers.get('Authorization'), _DASHBOARD_PASSWORD
         ):
+            if self.headers.get('Authorization'):
+                # Credentials were offered and were wrong: make guessing slow. Only
+                # this request's thread waits; nothing global is held.
+                time.sleep(AUTH_FAILURE_DELAY)
             self.send_response(401)
             self.send_header(
                 'WWW-Authenticate',
@@ -1828,6 +1834,11 @@ def main():
         print("Local operator username: tenagent")
         print(f"Local operator password: {_DASHBOARD_PASSWORD}")
         print("Set TENAGENT_DASHBOARD_PASSWORD to use a stable password.")
+        if (os.environ.get('TENAGENT_DASHBOARD_PASSWORD')
+                and len(_DASHBOARD_PASSWORD) < MIN_RECOMMENDED_PASSWORD_LENGTH):
+            print(f"[TenAgent] WARNING: TENAGENT_DASHBOARD_PASSWORD is shorter than "
+                  f"{MIN_RECOMMENDED_PASSWORD_LENGTH} characters and is easy to guess. "
+                  "Anything on this machine that can reach the port can try it; use a longer one.")
         print(f"Serving live specs from: {DIRECTORY}")
         print(f"Press Ctrl+C to stop the server.")
         print(f"=======================================================\n")

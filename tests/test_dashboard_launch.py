@@ -71,6 +71,23 @@ class LaunchTests(DashboardCase):
         self.assertIn("http://127.0.0.1:7791/dashboard/", output)
         self.assertNotIn("localhost", output)
 
+    def test_short_operator_passwords_are_warned_about_but_accepted(self):
+        for password, warned in (("short-pw", True), ("exactly-12-ch", False), ("x" * 11, True),
+                                 ("y" * 12, False)):
+            with self.subTest(password=len(password)):
+                self.serve._DASHBOARD_PASSWORD = password
+                os.environ["TENAGENT_DASHBOARD_PASSWORD"] = password
+                self.addCleanup(os.environ.pop, "TENAGENT_DASHBOARD_PASSWORD", None)
+                opened, output = self.run_main()
+                self.assertEqual(opened, ["http://127.0.0.1:7777/dashboard/"], "must still start")
+                self.assertEqual("WARNING" in output and "12" in output, warned, output)
+
+    def test_generated_passwords_do_not_trigger_the_warning(self):
+        os.environ.pop("TENAGENT_DASHBOARD_PASSWORD", None)
+        self.serve._DASHBOARD_PASSWORD = "g" * 32
+        _, output = self.run_main()
+        self.assertNotIn("WARNING", output)
+
     def test_readme_points_at_the_bound_address(self):
         readme = (MODULE_ROOT / "README.md").read_text(encoding="utf-8")
         self.assertNotIn("localhost:7777", readme)

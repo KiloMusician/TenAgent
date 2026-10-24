@@ -1383,6 +1383,55 @@ class ServerSideScrubbingTests(DashboardCase):
             self.assertNotIn(secret, log)
 
 
+class AuthThrottleTests(DashboardCase):
+    def test_wrong_credentials_are_slowed_down(self):
+        self.serve.AUTH_FAILURE_DELAY = 0.5
+        for header in (basic_auth("tenagent", "wrong"), basic_auth("other", self.password),
+                       "Basic !!!", "Bearer x"):
+            with self.subTest(header=header[:16]):
+                started = time.monotonic()
+                response = self.get("/api/csrf-token", auth=False, headers={"Authorization": header})
+                self.assertEqual(response.status, 401)
+                self.assertGreaterEqual(time.monotonic() - started, 0.4)
+
+    def test_correct_credentials_and_the_first_challenge_are_not_delayed(self):
+        self.serve.AUTH_FAILURE_DELAY = 0.5
+        started = time.monotonic()
+        self.assertEqual(self.get("/api/csrf-token").status, 200)
+        self.assertEqual(self.get("/api/csrf-token", auth=False).status, 401)  # no credentials yet
+        self.assertLess(time.monotonic() - started, 0.4)
+
+    def test_the_delay_does_not_serialise_other_requests(self):
+        import threading
+        self.serve.AUTH_FAILURE_DELAY = 0.5
+        done = []
+
+        def fail():
+            self.get("/api/csrf-token", auth=False, headers={"Authorization": basic_auth("x", "y")})
+            done.append(time.monotonic())
+
+        threads = [threading.Thread(target=fail) for _ in range(6)]
+        started = time.monotonic()
+        for thread in threads:
+            thread.start()
+        time.sleep(0.1)
+        legit_started = time.monotonic()
+        self.assertEqual(self.get("/api/csrf-token").status, 200)
+        self.assertLess(time.monotonic() - legit_started, 0.3)
+        for thread in threads:
+            thread.join(10)
+        self.assertLess(time.monotonic() - started, 1.5)  # parallel, not 6 x 0.5 s
+
+    def test_failed_basic_auth_on_other_routes_is_delayed_too(self):
+        self.serve.AUTH_FAILURE_DELAY = 0.5
+        started = time.monotonic()
+        response = self.raw_request("POST", "/api/log", auth=False,
+                                    headers=[("Authorization", basic_auth("tenagent", "nope")),
+                                             ("Origin", f"http://{self.local_host}")], body=b"{}")
+        self.assertEqual(response.status, 401)
+        self.assertGreaterEqual(time.monotonic() - started, 0.4)
+
+
 class BindingTests(DashboardCase):
     def test_server_listens_on_loopback_only(self):
         self.assertEqual(self.httpd.server_address[0], "127.0.0.1")

@@ -107,7 +107,7 @@ class DashboardCase(unittest.TestCase):
             name: getattr(serve, name, None)
             for name in (
                 "DIRECTORY", "SPECS_DIR", "LOG_FILE", "STATUS_FILE",
-                "_DASHBOARD_PASSWORD", "_SESSION_TOKEN",
+                "_DASHBOARD_PASSWORD", "_SESSION_TOKEN", "AUTH_FAILURE_DELAY",
                 "verify_ai_provider_key", "run_powershell_subprocess",
                 "run_agy_prompt",
             )
@@ -118,6 +118,7 @@ class DashboardCase(unittest.TestCase):
         serve.STATUS_FILE = str(self.root / "specs" / "swarm-status.json")
         serve._DASHBOARD_PASSWORD = self.password
         serve._SESSION_TOKEN = FAKE_SESSION_TOKEN
+        serve.AUTH_FAILURE_DELAY = 0  # tests that measure the delay set it themselves
 
         # Safety net: nothing in these tests may reach a provider or spawn a
         # process.  Any attempt is recorded and then fails the test.
