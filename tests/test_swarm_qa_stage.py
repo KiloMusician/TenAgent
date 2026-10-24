@@ -21,7 +21,7 @@ class QaStageRunsTheGeneratedTests(PipelineCase):
         self.run_swarm()
         self.assertEqual(len(self.test_runs), 1)
         run = self.test_runs[0]
-        self.assertEqual(run["args"], [sys.executable, "-m", "unittest", "discover", "-s", "tests"])
+        self.assertEqual(run["args"], [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_api.py"])
         self.assertEqual(run["cwd"], str(self.root))
         self.assertGreater(run["timeout"], 0)
 

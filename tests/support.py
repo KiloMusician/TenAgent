@@ -117,6 +117,9 @@ class PipelineCase(unittest.TestCase):
     """Runs the real pipeline entry point with a faked model call and a faked test runner."""
 
     def setUp(self):
+        quiet = patch.object(swarm_pipeline, "print", create=True)  # the pipeline echoes its log to stdout
+        quiet.start()
+        self.addCleanup(quiet.stop)
         self.new_root()
 
     def new_root(self):
@@ -166,7 +169,6 @@ class PipelineCase(unittest.TestCase):
                 debate_patch = patch.object(council, "run_council_debate", side_effect=debate)
             stack.enter_context(debate_patch)
             stack.enter_context(patch.object(swarm_pipeline.time, "sleep"))
-            stack.enter_context(patch.object(swarm_pipeline, "print", create=True))
             runner = run_fn or swarm_pipeline.execute_multi_brain_swarm
             return runner(goal, str(self.root))
 

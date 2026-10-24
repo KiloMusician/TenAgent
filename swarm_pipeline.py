@@ -455,8 +455,10 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
     # Execute test suite to verify tests pass
     log_swarm_message("07_qa", "Executing automated test suite: python -m unittest discover tests ...", base_dir)
     try:
+        # Only the generated file: any other test in tests/ (the framework ships its own) must
+        # neither decide whether the generated tests pass nor eat into the timeout.
         test_proc = subprocess.run(
-            [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+            [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_api.py"],
             cwd=base_dir,
             capture_output=True,
             text=True,
