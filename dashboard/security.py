@@ -99,6 +99,13 @@ _WINDOWS_DEVICE_NAME = re.compile(
 )
 
 
+def api_fetch_site_allowed(fetch_site: str | None) -> bool:
+    """Fetch-metadata rule for reads of /api/*: our own page, the address bar, or a client
+    that sends no metadata.  Another site (or a sibling origin) may navigate to the HTML
+    page but may not make the browser call the JSON API with the cached credentials."""
+    return fetch_site is None or fetch_site.strip().lower() in ("", "none", "same-origin")
+
+
 def valid_static_path(path: str) -> bool:
     """Decide from the raw request path whether it may name a static file.
 

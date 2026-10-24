@@ -25,6 +25,7 @@ if DIRECTORY not in sys.path:
     sys.path.insert(0, DIRECTORY)
 
 from dashboard.security import (
+    api_fetch_site_allowed,
     is_http_url,
     is_masked_key,
     parse_log_update,
@@ -1250,9 +1251,19 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
         # Avoid inherited SimpleHTTPRequestHandler HEAD bypassing GET guards.
         if not self._require_dashboard_access():
             return
+        if not self._api_read_allowed(self.path.split('?')[0].split('#')[0]):
+            return
         self.send_response(405)
         self.send_header('Allow', 'GET, POST')
         self.end_headers()
+
+    def _api_read_allowed(self, clean_path):
+        """Sec-Fetch-Site rule for /api/* reads (pages and static files are not affected)."""
+        if clean_path.startswith('/api/') and not api_fetch_site_allowed(
+                self.headers.get('Sec-Fetch-Site')):
+            self.send_json_response({"error": "Cross-site request denied"}, 403)
+            return False
+        return True
 
     def _require_dashboard_access(self, mutation=False):
         port = self.server.server_address[1]
@@ -1362,6 +1373,8 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
         # http.server drops '?query' and '#fragment' before touching the disk,
         # so every check below must look at the same part of the target.
         clean_path = self.path.split('?')[0].split('#')[0]
+        if not self._api_read_allowed(clean_path):
+            return
 
         # Redirect root to /dashboard/
         if clean_path == '/' or clean_path == '':

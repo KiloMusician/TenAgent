@@ -1383,6 +1383,46 @@ class ServerSideScrubbingTests(DashboardCase):
             self.assertNotIn(secret, log)
 
 
+class FetchMetadataReadTests(DashboardCase):
+    """Cross-site pages must not be able to trigger the JSON API with the cached credentials."""
+
+    API = ("/api/csrf-token", "/api/config", "/api/cli-status", "/api/config?x=1", "/api/unknown")
+
+    def fetch(self, method, path, site):
+        headers = [] if site is None else [("Sec-Fetch-Site", site)]
+        return self.raw_request(method, path, headers=headers)
+
+    def test_cross_site_and_same_site_api_reads_are_refused(self):
+        for path in self.API:
+            for site in ("cross-site", "same-site", "Cross-Site"):
+                with self.subTest(path=path, site=site):
+                    response = self.fetch("GET", path, site)
+                    self.assertEqual(response.status, 403)
+                    self.assertNotIn(b"token", response.body.lower().replace(b"cross", b""))
+                    self.assertNotIn(b"providers", response.body)
+
+    def test_head_is_refused_the_same_way(self):
+        self.assertEqual(self.fetch("HEAD", "/api/config", "cross-site").status, 403)
+        self.assertEqual(self.fetch("HEAD", "/api/config", "same-origin").status, 405)
+
+    def test_own_page_and_address_bar_requests_still_work(self):
+        for site in (None, "same-origin", "none"):
+            for path in ("/api/csrf-token", "/api/config", "/api/cli-status"):
+                with self.subTest(path=path, site=site):
+                    self.assertEqual(self.fetch("GET", path, site).status, 200)
+
+    def test_navigating_to_the_html_page_from_another_site_is_allowed(self):
+        # A link or redirect from another site: only the page itself, never /api/*.
+        for path in ("/dashboard/", "/dashboard", "/", "/dashboard/index.html", "/favicon.ico",
+                     "/dashboard/favicon.png", "/specs/swarm-status.json"):
+            with self.subTest(path=path):
+                self.assertIn(self.fetch("GET", path, "cross-site").status, (200, 301, 302))
+
+    def test_unknown_values_are_treated_as_untrusted_for_the_api(self):
+        self.assertEqual(self.fetch("GET", "/api/csrf-token", "bogus").status, 403)
+        self.assertEqual(self.fetch("GET", "/api/csrf-token", "").status, 200)  # absent-equivalent
+
+
 class AuthThrottleTests(DashboardCase):
     def test_wrong_credentials_are_slowed_down(self):
         self.serve.AUTH_FAILURE_DELAY = 0.5
