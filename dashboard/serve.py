@@ -1181,6 +1181,13 @@ def start_workspace_watcher(root_dir: str):
 
 STATIC_STATE_FILES = ('/specs/swarm-status.json', '/specs/terminal.log')
 STATIC_PREFIXES = ('/dashboard/', '/assets/', '/favicon.')
+SECURITY_HEADERS = (
+    ('X-Frame-Options', 'DENY'),
+    ('Content-Security-Policy', "frame-ancestors 'none'"),
+    ('X-Content-Type-Options', 'nosniff'),
+    ('Referrer-Policy', 'no-referrer'),
+    ('Cross-Origin-Resource-Policy', 'same-origin'),
+)
 MAX_BODY_BYTES = 1024 * 1024
 MAX_DRAIN_BYTES = 16 * 1024 * 1024  # how much of a rejected body is read and discarded
 _BAD_BODY = object()  # returned by _read_json_body after it has sent the error reply
@@ -1204,6 +1211,10 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         # This loopback dashboard intentionally does not expose CORS permissions.
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
+        # The page controls a command runner: never let another site frame it,
+        # sniff its responses into scripts, or embed them cross-origin.
+        for name, value in SECURITY_HEADERS:
+            self.send_header(name, value)
         super().end_headers()
 
     def do_OPTIONS(self):

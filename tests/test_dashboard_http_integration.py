@@ -1151,6 +1151,49 @@ class SessionTokenTests(DashboardCase):
         compare.assert_any_call(FAKE_SESSION_TOKEN.encode(), FAKE_SESSION_TOKEN.encode())
 
 
+class ResponseHeaderTests(DashboardCase):
+    """The page holds the operator's command channel: refuse framing and sniffing."""
+
+    EXPECTED = {
+        "x-frame-options": "DENY",
+        "content-security-policy": "frame-ancestors 'none'",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+        "cross-origin-resource-policy": "same-origin",
+    }
+
+    def assert_hardened(self, response, label):
+        for name, value in self.EXPECTED.items():
+            self.assertEqual(response.header(name), value, f"{label}: {name}")
+
+    def test_every_kind_of_response_carries_the_headers(self):
+        cases = {
+            "page": self.get("/dashboard/"),
+            "json": self.get("/api/csrf-token"),
+            "static-image": self.get("/dashboard/favicon.png"),
+            "favicon-route": self.get("/favicon.ico"),
+            "redirect": self.get("/"),
+            "401": self.get("/dashboard/", auth=False),
+            "403-host": self.get("/dashboard/", host="evil.example"),
+            "403-path": self.get("/dashboard/serve.py"),
+            "404": self.get("/nope"),
+            "405": self.request("OPTIONS", "/"),
+            "501": self.raw_request("PUT", "/"),
+            "post-400": self.post_json("/api/log", {"status": "BAD"},
+                                       headers=self.same_origin_headers()),
+        }
+        for label, response in cases.items():
+            with self.subTest(case=label):
+                self.assert_hardened(response, label)
+
+    def test_headers_do_not_break_the_page_or_its_own_requests(self):
+        page = self.get("/dashboard/")
+        self.assertEqual(page.status, 200)
+        # The page itself is same-origin, so none of these may block its fetches.
+        self.assertNotIn("sandbox", page.header("content-security-policy", ""))
+        self.assertNotIn("default-src", page.header("content-security-policy", ""))
+
+
 class BindingTests(DashboardCase):
     def test_server_listens_on_loopback_only(self):
         self.assertEqual(self.httpd.server_address[0], "127.0.0.1")
