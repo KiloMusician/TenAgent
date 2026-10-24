@@ -29,6 +29,8 @@ from dashboard.security import (
     prepare_config_payload,
     public_config,
     redact_text,
+    register_secrets,
+    scrub_log_text as _scrub_log_text,
     session_cookie_token,
     single_line,
     static_target_allowed,
@@ -38,6 +40,8 @@ from dashboard.security import (
     valid_operator_authorization,
     valid_static_path,
 )
+
+register_secrets(_DASHBOARD_PASSWORD, _SESSION_TOKEN)  # hidden from every log writer in this process
 
 import json
 import datetime
@@ -80,7 +84,7 @@ def is_shell_command(cmd: str) -> bool:
 
 def scrub_log_text(text: str) -> str:
     """One line, no credentials: what is allowed to reach terminal.log and the status file."""
-    return redact_text(single_line(str(text)), (_DASHBOARD_PASSWORD, _SESSION_TOKEN))
+    return _scrub_log_text(text, (_DASHBOARD_PASSWORD, _SESSION_TOKEN))
 
 def append_to_terminal_log(agent: str, text: str):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
@@ -96,6 +100,8 @@ def safe_write_json(filepath: str, data: dict) -> bool:
     return atomic_write_json(filepath, data)
 
 def set_agent_status_direct(agent_id: str, status: str, process_detail: str, progress: int = None):
+    process_detail = scrub_log_text(process_detail) if process_detail else process_detail
+
     def apply(data):
         for a in data.get("agents", []):
             if a.get("id") == agent_id:
@@ -155,7 +161,7 @@ def run_agy_prompt(prompt: str, root_dir: str):
             # Resolve from PATH rather than a developer-specific home directory.
             append_to_terminal_log("01_pm", "Starting Antigravity AI generation...")
             append_to_terminal_log("01_pm", f"Processing: {prompt}")
-            set_agent_status_direct("01_pm", "WORKING", f"Generating response for: {prompt[:40]}...", progress=35)
+            set_agent_status_direct("01_pm", "WORKING", f"Generating response for: {scrub_log_text(prompt)[:40]}...", progress=35)
 
             proc = subprocess.Popen(
                 [agy_bin, "-p", prompt],
@@ -1032,6 +1038,7 @@ def handle_task_completion(agent_id: str, root_dir: str):
     update_json_file(status_file, apply)
 
 def handle_file_event(agent_id: str, action_desc: str, root_dir: str):
+    action_desc = scrub_log_text(action_desc)
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     log_file = os.path.join(root_dir, "specs", "terminal.log")
     status_file = os.path.join(root_dir, "specs", "swarm-status.json")
@@ -1131,7 +1138,7 @@ def start_workspace_watcher(root_dir: str):
                                 if (stat != old_stat or pdetail != old_detail) and pdetail and pdetail != old_detail:
                                     ts = datetime.datetime.now().strftime("%H:%M:%S")
                                     with open(log_file, "a", encoding="utf-8") as lf:
-                                        lf.write(f"[{ts}] [{aid}] {pdetail}\n")
+                                        lf.write(f"[{ts}] [{aid}] {scrub_log_text(pdetail)}\n")
                                 prev_agent_states[aid] = (stat, pdetail)
                     except Exception:
                         pass

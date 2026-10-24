@@ -1290,6 +1290,99 @@ class ProviderUrlTests(DashboardCase):
         self.assertEqual(calls, [])
 
 
+class ServerSideScrubbingTests(DashboardCase):
+    """Writers inside serve.py other than the HTTP handlers."""
+
+    KEY = "sk-test-FAKE-ABCDEFGHIJKLMNOP12345"
+
+    def assert_files_clean(self):
+        for name in ("terminal.log", "swarm-status.json"):
+            path = self.root / "specs" / name
+            text = path.read_text("utf-8") if path.exists() else ""
+            for secret in (self.KEY, "hunter2-FAKE", self.password, FAKE_SESSION_TOKEN):
+                self.assertNotIn(secret, text, name)
+
+    def test_agent_prompt_status_is_scrubbed_before_it_is_shortened(self):
+        # The old code cut the prompt to 40 characters first, which can split a key
+        # so that no pattern recognises it any more.
+        prompt = f"x {self.KEY[:25]}{self.KEY[25:]} password=hunter2-FAKE"
+
+        import threading
+        serve = self.serve
+
+        test = self
+        mid_run = []
+
+        class Fake:
+            def __init__(self, argv, **kwargs):
+                self.stdout = type("S", (), {"readline": lambda s: "", "close": lambda s: None})()
+
+            def wait(self):
+                # The "Generating response for: ..." status exists only while running.
+                mid_run.append((test.root / "specs" / "swarm-status.json").read_text("utf-8"))
+                return 0
+
+        original = serve.subprocess.Popen
+        serve.subprocess.Popen = Fake
+        self.addCleanup(setattr, serve.subprocess, "Popen", original)
+        before = set(threading.enumerate())
+        self._saved["run_agy_prompt"](prompt, str(self.root))
+        for thread in set(threading.enumerate()) - before:
+            thread.join(5)
+        self.assertEqual(len(mid_run), 1)
+        self.assertIn("Generating response", mid_run[0])
+        for secret in (self.KEY, "hunter2-FAKE"):
+            self.assertNotIn(secret, mid_run[0])
+        self.assert_files_clean()
+        self.assertIn("Processing", self.read_log())
+
+    def test_file_event_and_status_helpers_scrub(self):
+        self.serve.set_agent_status_direct("01_pm", "WORKING", f"see {self.KEY}", 5)
+        self.serve.handle_file_event("01_pm", f"Saved notes token=hunter2-FAKE {self.KEY}", str(self.root))
+        self.assert_files_clean()
+        self.assertIn("Saved notes", self.read_log())
+
+    def test_task_completion_and_watcher_style_text_is_scrubbed(self):
+        data = self.read_status()
+        data["agents"][0]["status"] = "WORKING"
+        data["agents"][0]["processDetail"] = f"{self.KEY} password=hunter2-FAKE"
+        (self.root / "specs" / "swarm-status.json").write_text(json.dumps(data), "utf-8")
+        self.serve.handle_task_completion("01_pm", str(self.root))
+        self.assert_files_clean()
+
+    def test_text_written_straight_into_the_status_file_is_scrubbed_when_logged(self):
+        # An agent may edit swarm-status.json directly; what the watcher echoes into
+        # terminal.log must still be scrubbed.
+        import threading
+        data = self.read_status()
+        data["agents"][0]["processDetail"] = f"echo {self.KEY} password=hunter2-FAKE"
+        data["agents"][0]["status"] = "WORKING"
+        serve = self.serve
+        original_sleep = serve.time.sleep
+        calls = []
+
+        def stop_after_two_passes(seconds):
+            calls.append(seconds)
+            if len(calls) == 1:
+                path = self.root / "specs" / "swarm-status.json"
+                path.write_text(json.dumps(data), "utf-8")
+                os.utime(path, (time.time() + 5, time.time() + 5))
+            elif len(calls) > 2:
+                raise SystemExit
+
+        serve.time.sleep = stop_after_two_passes
+        self.addCleanup(setattr, serve.time, "sleep", original_sleep)
+        serve.start_workspace_watcher(str(self.root))
+        for _ in range(100):
+            if len(calls) > 2:
+                break
+            original_sleep(0.05)
+        log = self.read_log()  # the status file itself holds what the test wrote
+        self.assertIn("echo", log)
+        for secret in (self.KEY, "hunter2-FAKE"):
+            self.assertNotIn(secret, log)
+
+
 class BindingTests(DashboardCase):
     def test_server_listens_on_loopback_only(self):
         self.assertEqual(self.httpd.server_address[0], "127.0.0.1")

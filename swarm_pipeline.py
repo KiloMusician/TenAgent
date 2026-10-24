@@ -23,6 +23,7 @@ if ROOT_DIR not in sys.path:
 # Same lock and atomic replace as dashboard/serve.py, which runs this pipeline
 # on a thread of its own process.
 from dashboard.statefile import update_json_file
+from dashboard.security import scrub_log_text
 SPECS_DIR = os.path.join(ROOT_DIR, "specs")
 LOG_FILE = os.path.join(SPECS_DIR, "terminal.log")
 STATUS_FILE = os.path.join(SPECS_DIR, "swarm-status.json")
@@ -33,7 +34,7 @@ def get_timestamp() -> str:
 def log_swarm_message(agent_id: str, message: str, root_dir: str = None):
     target_log = os.path.join(root_dir or ROOT_DIR, "specs", "terminal.log")
     ts = get_timestamp()
-    clean_msg = message.strip()
+    clean_msg = scrub_log_text(message)
     if not clean_msg:
         return
     log_line = f"[{ts}] [{agent_id}] {clean_msg}\n"
@@ -53,6 +54,7 @@ def log_swarm_message(agent_id: str, message: str, root_dir: str = None):
 
 def update_swarm_status(agent_id: str, status: str, process_detail: str, progress: int = None, root_dir: str = None, overall_progress: int = None, phase: str = None):
     target_status = os.path.join(root_dir or ROOT_DIR, "specs", "swarm-status.json")
+    process_detail = scrub_log_text(process_detail) if process_detail else process_detail
 
     def apply(data):
         if overall_progress is not None and "project" in data:

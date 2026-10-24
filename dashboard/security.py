@@ -395,3 +395,22 @@ def is_http_url(value) -> bool:
         return parts.scheme.lower() in ("http", "https") and bool(parts.hostname)
     except ValueError:
         return False
+
+
+_REGISTERED_SECRETS = set()
+
+
+def register_secrets(*values) -> None:
+    """Make scrub_log_text() hide these exact values (dashboard password, session token)."""
+    _REGISTERED_SECRETS.update(v for v in values if isinstance(v, str) and v)
+
+
+def scrub_log_text(text, secrets=()) -> str:
+    """One line, no credentials: the only form allowed into terminal.log or status text.
+
+    Shared by every writer (dashboard, swarm pipeline, council, stream) so a prompt or
+    tool output that contains a key cannot reach files the dashboard serves.
+    """
+    known = tuple(secrets) + tuple(_REGISTERED_SECRETS)
+    known += (os.environ.get("TENAGENT_DASHBOARD_PASSWORD", ""),)
+    return redact_text(single_line(str(text)), known)

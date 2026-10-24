@@ -33,6 +33,9 @@ import subprocess
 import argparse
 
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+from dashboard.security import scrub_log_text  # one scrubber for every log writer
 SPECS_DIR = os.path.join(ROOT_DIR, "specs")
 LOG_FILE = os.path.join(SPECS_DIR, "terminal.log")
 STATUS_FILE = os.path.join(SPECS_DIR, "swarm-status.json")
@@ -71,7 +74,7 @@ def ensure_specs_dir():
 
 def append_terminal_log(agent_id: str, message: str):
     ensure_specs_dir()
-    clean_msg = clean_ansi(message).strip()
+    clean_msg = scrub_log_text(clean_ansi(message))
     if not clean_msg:
         return
 
@@ -103,7 +106,7 @@ def update_agent_status(agent_id: str, process_detail: str, status: str = None, 
             data = json.load(f)
 
         agent_found = False
-        clean_detail = clean_ansi(process_detail).strip()
+        clean_detail = scrub_log_text(clean_ansi(process_detail))
 
         for a in data.get("agents", []):
             if a.get("id") == agent_id:
