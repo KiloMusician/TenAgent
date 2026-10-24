@@ -134,7 +134,8 @@ class PipelineCase(unittest.TestCase):
         self.test_runs = []
 
     def run_swarm(self, outputs=None, providers=None, status=True, goal="Mock task",
-                  call_hook=None, run_fn=None, debate=None, test_returncode=0):
+                  call_hook=None, run_fn=None, debate=None, test_returncode=0,
+                  test_output="Ran 1 test in 0.001s\n\nOK\n"):
         merged = dict(GOOD_OUTPUTS)
         merged.update(outputs or {})
         if status and not (self.root / "specs" / "swarm-status.json").exists():
@@ -156,7 +157,7 @@ class PipelineCase(unittest.TestCase):
             self.test_runs.append({"args": list(args), **kwargs})
             if isinstance(test_returncode, BaseException):
                 raise test_returncode
-            return subprocess.CompletedProcess(args, test_returncode, "", "fake runner output")
+            return subprocess.CompletedProcess(args, test_returncode, "", test_output)
 
         with ExitStack() as stack:
             stack.enter_context(patch.object(council, "get_active_providers", return_value=providers))

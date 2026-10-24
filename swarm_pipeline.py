@@ -9,6 +9,7 @@ Enforces contract-first specifications, zero fake progress, honest failure repor
 import os
 import sys
 import json
+import re
 import subprocess
 import time
 import datetime
@@ -22,6 +23,19 @@ ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 SPECS_DIR = os.path.join(ROOT_DIR, "specs")
 LOG_FILE = os.path.join(SPECS_DIR, "terminal.log")
 STATUS_FILE = os.path.join(SPECS_DIR, "swarm-status.json")
+
+_RAN_LINE = re.compile(r"^Ran (\d+) tests? in ", re.M)
+
+
+def count_tests_run(output: str):
+    """Number of tests unittest says it ran, or None if there is no summary line.
+
+    A runner that exits 0 without running anything must not count as a pass: unittest
+    exits 0 for an empty discovery up to Python 3.11 and 5 ("NO TESTS RAN") from 3.12 on.
+    """
+    found = _RAN_LINE.findall(output or "")
+    return int(found[-1]) if found else None
+
 
 def get_timestamp() -> str:
     return datetime.datetime.now().strftime("%H:%M:%S")
@@ -453,7 +467,7 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
         f.write(test_clean.strip() + "\n")
 
     # Execute test suite to verify tests pass
-    log_swarm_message("07_qa", "Executing automated test suite: python -m unittest discover tests ...", base_dir)
+    log_swarm_message("07_qa", "Executing the generated tests: python -m unittest discover -s tests -p test_api.py ...", base_dir)
     try:
         # Only the generated file: any other test in tests/ (the framework ships its own) must
         # neither decide whether the generated tests pass nor eat into the timeout.
@@ -469,7 +483,13 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
             log_swarm_message("07_qa", f"[TEST FAILURE] Unit test runner reported failures:\n{err_output[:300]}", base_dir)
             update_swarm_status("07_qa", "WAITING", "Test execution failed. Unit tests reported failures or syntax errors.", 50, base_dir, phase="FAILED: QA Unit Tests Failed")
             return False
-        log_swarm_message("07_qa", "Automated test suite passed with zero regressions.", base_dir)
+        ran = count_tests_run((test_proc.stderr or "") + "\n" + (test_proc.stdout or ""))
+        if not ran:  # 0 tests, or no unittest summary at all (for example pytest-style functions)
+            why = "ran no tests" if ran == 0 else "printed no unittest summary"
+            log_swarm_message("07_qa", f"[TEST FAILURE] The generated tests {why}; nothing was verified.", base_dir)
+            update_swarm_status("07_qa", "WAITING", f"Generated tests {why}.", 50, base_dir, phase="FAILED: QA No Tests Ran")
+            return False
+        log_swarm_message("07_qa", f"Automated test suite passed ({ran} test{'s' if ran != 1 else ''} ran).", base_dir)
     except Exception as e:
         log_swarm_message("07_qa", f"[TEST RUNNER ERROR] Could not execute tests: {str(e)}", base_dir)
         update_swarm_status("07_qa", "WAITING", f"Test runner error: {str(e)}", 0, base_dir, phase="FAILED: QA Test Runner Error")
