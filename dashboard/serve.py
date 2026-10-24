@@ -1759,14 +1759,22 @@ class ThreadedSwarmServer(BaseServerClass):
             return
         super().handle_error(request, client_address)
 
+def _something_listens(family, host, port: int) -> bool:
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.2)
+            probe.connect((host, port))
+            return True
+    except OSError:
+        return False
+
 def is_port_available(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.settimeout(0.2)
-        try:
-            probe.connect(('127.0.0.1', port))
-            return False
-        except OSError:
-            pass
+    # A listener on [::1] would receive connections that clients (which try ::1
+    # first for "localhost") mean for us, so such a port is not usable either.
+    if _something_listens(socket.AF_INET, '127.0.0.1', port):
+        return False
+    if socket.has_ipv6 and _something_listens(socket.AF_INET6, '::1', port):
+        return False
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
@@ -1804,7 +1812,7 @@ def main():
 
     httpd, port = start_server_with_auto_port(DEFAULT_PORT, MAX_PORT_ATTEMPTS)
     with httpd:
-        url = f"http://localhost:{port}/dashboard/"
+        url = f"http://127.0.0.1:{port}/dashboard/"  # exactly what the server binds
         print(f"\n=======================================================")
         if port != DEFAULT_PORT:
             print(f"[TenAgent] Port {DEFAULT_PORT} is in use (by another project or dev server).")

@@ -181,7 +181,7 @@ Or run via terminal:
 ```bash
 python dashboard/serve.py
 ```
-Open your browser at **http://localhost:7777/dashboard/**.
+Open your browser at **http://127.0.0.1:7777/dashboard/** (the server listens on 127.0.0.1 only; the terminal prints the exact URL and port).
 
 ### Step 3: Start Building with Your AI Assistant
 Open a separate terminal window in the project folder and launch your AI assistant (e.g. `agy`):
