@@ -34,6 +34,7 @@ from dashboard.security import (
 
 import json
 import datetime
+from dashboard.statefile import STATE_LOCK, atomic_write_json, update_json_file
 import threading
 import time
 import subprocess
@@ -79,34 +80,23 @@ def append_to_terminal_log(agent: str, text: str):
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"[{ts}] [{agent}] {clean}\n")
 
-def safe_write_json(filepath: str, data: dict):
-    try:
-        tmp_path = filepath + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, filepath)
-    except Exception:
-        pass
+def safe_write_json(filepath: str, data: dict) -> bool:
+    """Atomic replace (see dashboard.statefile); returns False if it did not land."""
+    return atomic_write_json(filepath, data)
 
 def set_agent_status_direct(agent_id: str, status: str, process_detail: str, progress: int = None):
-    try:
-        if os.path.exists(STATUS_FILE):
-            with open(STATUS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            updated = False
-            for a in data.get("agents", []):
-                if a.get("id") == agent_id:
-                    a["status"] = status
-                    if process_detail:
-                        a["processDetail"] = process_detail
-                    if progress is not None:
-                        a["progress"] = progress
-                    updated = True
-                    break
-            if updated:
-                safe_write_json(STATUS_FILE, data)
-    except Exception:
-        pass
+    def apply(data):
+        for a in data.get("agents", []):
+            if a.get("id") == agent_id:
+                a["status"] = status
+                if process_detail:
+                    a["processDetail"] = process_detail
+                if progress is not None:
+                    a["progress"] = progress
+                return True
+        return False
+
+    update_json_file(STATUS_FILE, apply)
 
 def run_powershell_subprocess(cmd: str, root_dir: str):
     def worker():
@@ -598,14 +588,9 @@ def get_cached_cli_status(root_dir: str) -> dict:
     return data
 
 def update_provider_runtime_status(provider_id: str, status: str, status_detail: str, valid: bool = None):
-    try:
-        cfg_file = os.path.join(SPECS_DIR, "swarm-config.json")
-        if not os.path.exists(cfg_file):
-            return
-        with open(cfg_file, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-        changed = False
-        p_target = provider_id.lower().strip()
+    p_target = provider_id.lower().strip()
+
+    def apply(cfg):
         for p in cfg.get("providers", []):
             cur_p = (p.get("provider") or "").lower().strip()
             if cur_p == p_target or (cur_p in p_target) or (p_target in cur_p):
@@ -614,12 +599,11 @@ def update_provider_runtime_status(provider_id: str, status: str, status_detail:
                     p["statusDetail"] = status_detail
                     if valid is not None:
                         p["valid"] = valid
-                    changed = True
-                break
-        if changed:
-            safe_write_json(cfg_file, cfg)
-    except Exception:
-        pass
+                    return True
+                return False
+        return False
+
+    update_json_file(os.path.join(SPECS_DIR, "swarm-config.json"), apply)
 
 def probe_and_update_local_provider(p: dict) -> bool:
     """Probes a local provider (e.g. 9Router or Ollama) via TCP socket and syncs status. Returns True if changed."""
@@ -666,6 +650,49 @@ def probe_and_update_local_provider(p: dict) -> bool:
             changed = True
     return changed
 
+PROBE_FIELDS = ("status", "statusDetail", "valid")
+
+def _provider_identity(p: dict):
+    return (p.get("provider"), p.get("baseUrl") or p.get("base_url"))
+
+def refresh_local_provider_statuses(cfg_file: str) -> bool:
+    """Probe local providers and merge only the status fields into the live file.
+
+    Probing does socket I/O, so it runs on a snapshot outside the lock; the
+    results are then applied to a fresh read of the file.  Writing the snapshot
+    back (the old behaviour) reverted anything saved while the probe ran.
+    """
+    try:
+        with open(cfg_file, "r", encoding="utf-8") as f:
+            snapshot = json.load(f).get("providers", [])
+    except (OSError, ValueError, AttributeError):
+        return False
+    results = []
+    for original in snapshot if isinstance(snapshot, list) else []:
+        if not isinstance(original, dict):
+            continue
+        probed = dict(original)
+        if probe_and_update_local_provider(probed):
+            results.append((_provider_identity(original),
+                            {k: probed[k] for k in PROBE_FIELDS if k in probed}))
+    if not results:
+        return False
+
+    def apply(cfg):
+        changed = False
+        for p in cfg.get("providers", []):
+            if not isinstance(p, dict):
+                continue
+            for identity, fields in results:
+                if _provider_identity(p) == identity:
+                    for name, value in fields.items():
+                        if p.get(name) != value:
+                            p[name] = value
+                            changed = True
+        return changed
+
+    return update_json_file(cfg_file, apply)
+
 def local_providers_probe_worker(root_dir: str):
     cfg_file = os.path.join(root_dir, "specs", "swarm-config.json")
     while True:
@@ -673,17 +700,7 @@ def local_providers_probe_worker(root_dir: str):
             time.sleep(2.5)
             if not os.path.exists(cfg_file):
                 continue
-            with open(cfg_file, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-
-            providers = cfg.get("providers", [])
-            changed = False
-            for p in providers:
-                if probe_and_update_local_provider(p):
-                    changed = True
-
-            if changed:
-                safe_write_json(cfg_file, cfg)
+            refresh_local_provider_statuses(cfg_file)
         except Exception:
             pass
 
@@ -815,15 +832,6 @@ IGNORE_FILES = {
 }
 
 AUTO_GENERATED_FILES = set()
-
-def safe_write_json(filepath: str, data: dict):
-    try:
-        tmp_path = filepath + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, filepath)
-    except Exception:
-        pass
 
 def detect_agent_from_file_path(rel_path: str) -> str:
     norm = rel_path.replace("\\", "/").lower()
@@ -959,47 +967,44 @@ def handle_task_completion(agent_id: str, root_dir: str):
     log_file = os.path.join(root_dir, "specs", "terminal.log")
     status_file = os.path.join(root_dir, "specs", "swarm-status.json")
     
-    try:
-        if os.path.exists(status_file):
-            with open(status_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            updated = False
+    msg = f"Task completed (100%). Status set to REVIEWING."
+
+    def apply(data):
+        for a in data.get("agents", []):
+            if a.get("id") == agent_id and a.get("status") == "WORKING":
+                a["status"] = "REVIEWING"
+                a["progress"] = 100
+                a["processDetail"] = get_role_stage_message(agent_id, 100)
+                break
+        else:
+            return False
+        data.setdefault("logs", []).append({
+            "timestamp": ts,
+            "agent": agent_id,
+            "message": f"[{agent_id}] {msg}"
+        })
+        data["logs"] = data["logs"][-50:]
+
+        # Natural dependency notification (Honest state without fake execution)
+        if agent_id in ("05_backend", "06_client"):
             for a in data.get("agents", []):
-                if a.get("id") == agent_id and a.get("status") == "WORKING":
-                    a["status"] = "REVIEWING"
-                    a["progress"] = 100
-                    a["processDetail"] = get_role_stage_message(agent_id, 100)
-                    updated = True
-                    break
-            if updated:
-                msg = f"Task completed (100%). Status set to REVIEWING."
-                if "logs" not in data:
-                    data["logs"] = []
-                data["logs"].append({
-                    "timestamp": ts,
-                    "agent": agent_id,
-                    "message": f"[{agent_id}] {msg}"
-                })
-                data["logs"] = data["logs"][-50:]
-                
-                # Natural dependency notification (Honest state without fake execution)
-                if agent_id in ("05_backend", "06_client"):
-                    for a in data.get("agents", []):
-                        if a.get("id") == "07_qa" and a.get("status") in ("IDLE", "WAITING"):
-                            a["status"] = "WAITING"
-                            a["currentTask"] = "Pending test verification for latest backend/client changes."
-                            a["processDetail"] = "Standby: Waiting for automated test execution or QA suite run."
-                
-                with open(log_file, "a", encoding="utf-8") as f:
-                    f.write(f"[{ts}] [{agent_id}] {msg}\n")
+                if a.get("id") == "07_qa" and a.get("status") in ("IDLE", "WAITING"):
+                    a["status"] = "WAITING"
+                    a["currentTask"] = "Pending test verification for latest backend/client changes."
+                    a["processDetail"] = "Standby: Waiting for automated test execution or QA suite run."
 
-                if "project" in data and "agents" in data:
-                    total_p = sum(ag.get("progress", 0) for ag in data["agents"])
-                    data["project"]["overallProgress"] = int(total_p / len(data["agents"]))
+        try:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{ts}] [{agent_id}] {msg}\n")
+        except OSError:
+            pass
 
-                safe_write_json(status_file, data)
-    except Exception:
-        pass
+        if "project" in data and "agents" in data:
+            total_p = sum(ag.get("progress", 0) for ag in data["agents"])
+            data["project"]["overallProgress"] = int(total_p / len(data["agents"]))
+        return True
+
+    update_json_file(status_file, apply)
 
 def handle_file_event(agent_id: str, action_desc: str, root_dir: str):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
@@ -1019,35 +1024,28 @@ def handle_file_event(agent_id: str, action_desc: str, root_dir: str):
         pass
         
     # 2. Update swarm-status.json with dynamic progress
-    try:
-        if os.path.exists(status_file):
-            with open(status_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            updated = False
-            for a in data.get("agents", []):
-                if a.get("id") == agent_id:
-                    a["processDetail"] = action_desc
-                    a["status"] = "WORKING"
-                    updated = True
-                    break
-            if updated:
-                if "logs" not in data:
-                    data["logs"] = []
-                data["logs"].append({
-                    "timestamp": ts,
-                    "agent": agent_id,
-                    "message": f"[{agent_id}] {action_desc}"
-                })
-                data["logs"] = data["logs"][-50:]
-                
-                # Update overall project progress
-                if "project" in data and "agents" in data:
-                    total_p = sum(ag.get("progress", 0) for ag in data["agents"])
-                    data["project"]["overallProgress"] = int(total_p / len(data["agents"]))
+    def apply(data):
+        for a in data.get("agents", []):
+            if a.get("id") == agent_id:
+                a["processDetail"] = action_desc
+                a["status"] = "WORKING"
+                break
+        else:
+            return False
+        data.setdefault("logs", []).append({
+            "timestamp": ts,
+            "agent": agent_id,
+            "message": f"[{agent_id}] {action_desc}"
+        })
+        data["logs"] = data["logs"][-50:]
 
-                safe_write_json(status_file, data)
-    except Exception:
-        pass
+        # Update overall project progress
+        if "project" in data and "agents" in data:
+            total_p = sum(ag.get("progress", 0) for ag in data["agents"])
+            data["project"]["overallProgress"] = int(total_p / len(data["agents"]))
+        return True
+
+    update_json_file(status_file, apply)
 
 def start_workspace_watcher(root_dir: str):
     def watcher_loop():
@@ -1119,20 +1117,19 @@ def start_workspace_watcher(root_dir: str):
                     # If an agent was in WORKING state for over 120 seconds with no tool activity, return to IDLE without fake 100%
                     if elapsed >= 120.0:
                         del last_activity_time[aid]
-                        if os.path.exists(status_file):
+                        def go_idle(sdata, aid=aid):
+                            changed = False
+                            for a in sdata.get("agents", []):
+                                if a.get("id") == aid and a.get("status") == "WORKING":
+                                    a["status"] = "IDLE"
+                                    a["processDetail"] = "Standing by for founder instructions."
+                                    changed = True
+                            return changed
+
+                        if update_json_file(status_file, go_idle):
                             try:
-                                with open(status_file, "r", encoding="utf-8") as f:
-                                    sdata = json.load(f)
-                                changed = False
-                                for a in sdata.get("agents", []):
-                                    if a.get("id") == aid and a.get("status") == "WORKING":
-                                        a["status"] = "IDLE"
-                                        a["processDetail"] = "Standing by for founder instructions."
-                                        changed = True
-                                if changed:
-                                    safe_write_json(status_file, sdata)
-                                    prev_status_mtime = os.path.getmtime(status_file)
-                            except Exception:
+                                prev_status_mtime = os.path.getmtime(status_file)
+                            except OSError:
                                 pass
 
                 # 3. Workspace filesystem watcher for all project code and specs
@@ -1408,17 +1405,11 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
 
             if os.path.exists(cfg_file):
                 try:
+                    # Merges probe results into the file (credentials untouched),
+                    # then serve what is on disk.
+                    refresh_local_provider_statuses(cfg_file)
                     with open(cfg_file, "r", encoding="utf-8") as f:
-                        saved = json.load(f)
-                        cfg.update(saved)
-                        if "providers" in cfg:
-                            probe_changed = False
-                            for p in cfg["providers"]:
-                                if probe_and_update_local_provider(p):
-                                    probe_changed = True
-                            if probe_changed:
-                                # Persist original credentials, not their redacted HTTP view.
-                                safe_write_json(cfg_file, cfg)
+                        cfg.update(json.load(f))
                 except Exception:
                     pass
             cfg["cli"] = get_cached_cli_status(DIRECTORY)
@@ -1515,9 +1506,11 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(providers), 5)) as executor:
                         list(executor.map(validate_single_provider, providers))
 
-                os.makedirs(SPECS_DIR, exist_ok=True)
-                with open(cfg_file, "w", encoding="utf-8") as f:
-                    json.dump(payload, f, indent=2)
+                with STATE_LOCK:
+                    saved = atomic_write_json(cfg_file, payload)
+                if not saved:
+                    self.send_json_response({"error": "Could not save configuration"}, 500)
+                    return
 
                 self.send_json_response({"ok": True, "config": public_config(payload)})
                 return
@@ -1674,10 +1667,8 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                     with open(LOG_FILE, "a", encoding="utf-8") as f:
                         f.write(f"[{ts}] [{agent_id}] {message}\n")
 
-                if os.path.exists(STATUS_FILE) and (status or progress is not None or message):
-                    try:
-                        with open(STATUS_FILE, "r", encoding="utf-8") as f:
-                            data = json.load(f)
+                if status or progress is not None or message:
+                    def apply(data):
                         for a in data.get("agents", []):
                             if a.get("id") == agent_id:
                                 if message:
@@ -1685,11 +1676,11 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                                 if status:
                                     a["status"] = status
                                 if progress is not None:
-                                    a["progress"] = max(0, min(100, int(progress)))
-                                break
-                        safe_write_json(STATUS_FILE, data)
-                    except Exception:
-                        pass
+                                    a["progress"] = progress
+                                return True
+                        return False
+
+                    update_json_file(STATUS_FILE, apply)
 
                 self.send_json_response({"ok": True})
                 return

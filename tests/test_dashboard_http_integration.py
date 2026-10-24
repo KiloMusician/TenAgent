@@ -731,6 +731,160 @@ class RequestBodyTests(DashboardCase):
         self.assertEqual(sock.recv(1024)[:0], b"")  # EOF (or error page), not a hang
 
 
+class StateFileConcurrencyTests(DashboardCase):
+    """The dashboard's threads share swarm-status.json / swarm-config.json."""
+
+    def agent_ids(self, count):
+        return [a["id"] for a in self.read_status()["agents"]][:count]
+
+    def leftovers(self):
+        return sorted(p.name for p in (self.root / "specs").glob("*.tmp"))
+
+    def test_concurrent_status_updates_are_neither_lost_nor_corrupted(self):
+        import threading
+        ids = self.agent_ids(8)
+        barrier = threading.Barrier(len(ids))
+
+        def work(agent_id):
+            barrier.wait()
+            for step in range(1, 26):
+                self.serve.set_agent_status_direct(agent_id, "WORKING", f"step {step}", step)
+
+        threads = [threading.Thread(target=work, args=(i,)) for i in ids]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(60)
+        final = {a["id"]: a["progress"] for a in self.read_status()["agents"]}
+        self.assertEqual([final[i] for i in ids], [25] * len(ids))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_concurrent_log_posts_keep_the_status_file_consistent(self):
+        import threading
+        ids = self.agent_ids(6)
+        barrier = threading.Barrier(len(ids))
+        statuses = []
+
+        def work(agent_id):
+            barrier.wait()
+            for step in range(1, 11):
+                reply = self.post_json(
+                    "/api/log",
+                    {"agent": agent_id, "message": f"s{step}", "progress": step * 10},
+                    headers=self.same_origin_headers())
+                statuses.append(reply.status)
+
+        threads = [threading.Thread(target=work, args=(i,)) for i in ids]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(60)
+        self.assertEqual(set(statuses), {200})
+        final = {a["id"]: a["progress"] for a in self.read_status()["agents"]}
+        self.assertEqual([final[i] for i in ids], [100] * len(ids))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_update_waits_for_a_reader_instead_of_being_dropped(self):
+        # SimpleHTTPRequestHandler keeps the file open while it streams it; on
+        # Windows os.replace onto an open file fails, and the update used to be
+        # swallowed silently.
+        import threading
+        status = self.root / "specs" / "swarm-status.json"
+        agent_id = self.agent_ids(1)[0]
+        reader = open(status, "rb")
+        self.addCleanup(reader.close)
+        worker = threading.Thread(
+            target=self.serve.set_agent_status_direct,
+            args=(agent_id, "WORKING", "after-reader", 77))
+        worker.start()
+        time.sleep(0.3)
+        reader.close()
+        worker.join(10)
+        agent = next(a for a in self.read_status()["agents"] if a["id"] == agent_id)
+        self.assertEqual((agent["progress"], agent["processDetail"]), (77, "after-reader"))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_config_saved_by_the_operator_is_not_reverted_by_the_probe_worker(self):
+        import threading
+        serve = self.serve
+        self.write_config({"engine": "custom", "providers": [
+            {"provider": "9router", "key": "sk-test-FAKE-OLD-111111", "baseUrl": "http://127.0.0.1:9/v1"}]})
+        probing, release = threading.Event(), threading.Event()
+
+        def slow_probe(provider):
+            probing.set()
+            release.wait(10)
+            provider["status"] = "connection_error"
+            provider["statusDetail"] = "Offline"
+            provider["valid"] = False
+            return True
+
+        original_probe, original_sleep = serve.probe_and_update_local_provider, serve.time.sleep
+        calls = []
+
+        def one_pass_sleep(seconds):
+            calls.append(seconds)
+            if len(calls) > 1:
+                raise SystemExit  # end the worker thread after a single pass
+
+        serve.probe_and_update_local_provider = slow_probe
+        serve.time.sleep = one_pass_sleep
+        self.addCleanup(setattr, serve, "probe_and_update_local_provider", original_probe)
+        self.addCleanup(setattr, serve.time, "sleep", original_sleep)
+        worker = threading.Thread(target=serve.local_providers_probe_worker, args=(str(self.root),))
+        worker.start()
+        self.assertTrue(probing.wait(10))
+        saved = self.post_json(
+            "/api/config",
+            {"providers": [{"provider": "gemini", "key": "sk-test-FAKE-NEW-222222"}]},
+            headers=self.same_origin_headers())
+        self.assertEqual(saved.status, 200)
+        release.set()
+        worker.join(10)
+        names = [p["provider"] for p in self.read_config()["providers"]]
+        self.assertEqual(names, ["gemini"])
+
+    def test_probe_results_are_merged_into_the_current_config(self):
+        import threading
+        serve = self.serve
+        self.write_config({"engine": "custom", "providers": [
+            {"provider": "9router", "key": "sk-test-FAKE-KEEP-333333", "baseUrl": "http://127.0.0.1:9/v1"}]})
+        probing, release = threading.Event(), threading.Event()
+
+        def slow_probe(provider):
+            probing.set()
+            release.wait(10)
+            provider["status"] = "connection_error"
+            provider["valid"] = False
+            return True
+
+        original_probe, original_sleep = serve.probe_and_update_local_provider, serve.time.sleep
+        calls = []
+
+        def one_pass_sleep(seconds):
+            calls.append(seconds)
+            if len(calls) > 1:
+                raise SystemExit
+
+        serve.probe_and_update_local_provider = slow_probe
+        serve.time.sleep = one_pass_sleep
+        self.addCleanup(setattr, serve, "probe_and_update_local_provider", original_probe)
+        self.addCleanup(setattr, serve.time, "sleep", original_sleep)
+        worker = threading.Thread(target=serve.local_providers_probe_worker, args=(str(self.root),))
+        worker.start()
+        self.assertTrue(probing.wait(10))
+        # An unrelated edit lands while the probe is in flight.
+        current = self.read_config()
+        current["note"] = "edited-meanwhile"
+        self.write_config(current)
+        release.set()
+        worker.join(10)
+        stored = self.read_config()
+        self.assertEqual(stored.get("note"), "edited-meanwhile")
+        self.assertEqual(stored["providers"][0]["status"], "connection_error")
+        self.assertEqual(stored["providers"][0]["key"], "sk-test-FAKE-KEEP-333333")
+
+
 class BindingTests(DashboardCase):
     def test_server_listens_on_loopback_only(self):
         self.assertEqual(self.httpd.server_address[0], "127.0.0.1")
