@@ -1012,6 +1012,59 @@ class ConfigKeyPreservationTests(DashboardCase):
         self.assertEqual(self.verified, [])
 
 
+class SecretRedactionTests(DashboardCase):
+    """Secrets must not come back out through config views or the terminal log."""
+
+    SECRETS = {
+        "secret_key": "SECRET-VALUE-01",
+        "openai_api_key": "SECRET-VALUE-02",
+        "x-api-key": "SECRET-VALUE-03",
+        "auth_token": "SECRET-VALUE-04",
+        "apiSecret": "SECRET-VALUE-05",
+        "client_secret_key": "SECRET-VALUE-06",
+        "Passphrase": "SECRET-VALUE-07",
+        "cookie": "SECRET-VALUE-08",
+    }
+
+    def test_secret_named_fields_are_removed_at_every_depth(self):
+        config = {"engine": "custom", "providers": [
+            {"provider": "gemini", "key": "sk-test-FAKE-123-abcdefghijklmnop", "max_tokens": 512,
+             "headers": {"Authorization": "Bearer SECRET-VALUE-09", "X-Api-Key": "SECRET-VALUE-10"},
+             "extra": [{"session_token": "SECRET-VALUE-11"}]}],
+            "credentials": {"user": "u", "password": "SECRET-VALUE-12"}, **self.SECRETS}
+        self.write_config(config)
+        body = self.get("/api/config").text()
+        self.assertNotIn("SECRET-VALUE", body)
+        self.assertIn('"max_tokens": 512', body)  # plural counts are not credentials
+        posted = self.post_json("/api/config", config, headers=self.same_origin_headers())
+        self.assertEqual(posted.status, 200)
+        self.assertNotIn("SECRET-VALUE", posted.text())
+
+    def test_url_credentials_are_masked_but_survive_a_round_trip(self):
+        url = "http://user:URLSECRET-1@127.0.0.1:1/v1?token=URLSECRET-2&model=m1&api_key=URLSECRET-3"
+        self.write_config({"engine": "custom", "providers": [
+            {"provider": "9router", "key": "sk-test-FAKE-123-abcdefghijklmnop", "baseUrl": url}]})
+        view = self.get("/api/config")
+        self.assertNotIn("URLSECRET", view.text())
+        shown = view.json()["providers"][0]["baseUrl"]
+        self.assertIn("127.0.0.1:1/v1", shown)
+        self.assertIn("model=m1", shown)
+        saved = self.post_json("/api/config", view.json(), headers=self.same_origin_headers())
+        self.assertEqual(saved.status, 200)
+        self.assertNotIn("URLSECRET", saved.text())
+        self.assertEqual(self.read_config()["providers"][0]["baseUrl"], url)
+
+    def test_short_keys_are_not_revealed_by_the_mask(self):
+        self.write_config({"providers": [
+            {"provider": "a", "key": "sk-short-12"},
+            {"provider": "b", "key": "k" * 20 + "ZZZZ"},
+            {"provider": "c", "key": "sk-test-FAKE-123-abcdefghijklmnop"}]})
+        masks = [p["key_masked"] for p in self.get("/api/config").json()["providers"]]
+        self.assertEqual(masks[0], "***")
+        self.assertEqual(masks[1], "kkkk...ZZZZ")
+        self.assertEqual(masks[2], "sk-t...mnop")
+
+
 class BindingTests(DashboardCase):
     def test_server_listens_on_loopback_only(self):
         self.assertEqual(self.httpd.server_address[0], "127.0.0.1")

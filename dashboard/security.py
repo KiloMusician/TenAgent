@@ -7,13 +7,45 @@ import os
 import re
 from collections.abc import Mapping
 from typing import NamedTuple
+from urllib.parse import urlsplit, urlunsplit
 
 
-_SECRET_FIELD_NAMES = frozenset({
-    "key", "apikey", "accesstoken", "refreshtoken", "secret",
-    "password", "clientsecret", "privatekey", "authorization",
-    "token", "bearertoken",
-})
+# A field is treated as a credential when its name merely *contains* one of
+# these (so secret_key, x-api-key, openai_api_key, auth_token, passphrase ...
+# are covered without enumerating them).  Plural "...tokens" names are counts
+# (max_tokens), not credentials.
+_SECRET_NAME_PARTS = (
+    "key", "secret", "token", "password", "passwd", "passphrase",
+    "credential", "authorization", "bearer", "cookie",
+)
+
+
+def is_secret_field(name) -> bool:
+    normal = re.sub(r"[^a-z0-9]", "", str(name).lower())
+    if normal.endswith("tokens"):
+        return False
+    return any(part in normal for part in _SECRET_NAME_PARTS)
+
+
+def redact_url(value: str) -> str:
+    """Hide userinfo and secret-named query values of a URL; other text is returned as is."""
+    if "://" not in value:
+        return value
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return value
+    if not parts.scheme or not parts.netloc:
+        return value
+    netloc = parts.netloc
+    if "@" in netloc:
+        netloc = "***@" + netloc.rsplit("@", 1)[1]
+    query = "&".join(
+        f"{piece.split('=', 1)[0]}=***"
+        if "=" in piece and is_secret_field(piece.split("=", 1)[0]) else piece
+        for piece in parts.query.split("&")
+    ) if parts.query else ""
+    return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
 
 
 def valid_operator_authorization(header: str | None, password: str) -> bool:
@@ -121,11 +153,12 @@ def public_config(config: Mapping) -> dict:
             return {
                 name: redact(item)
                 for name, item in value.items()
-                if name.lower().replace("_", "").replace("-", "")
-                not in _SECRET_FIELD_NAMES
+                if not is_secret_field(name)
             }
         if isinstance(value, list):
             return [redact(item) for item in value]
+        if isinstance(value, str):
+            return redact_url(value)
         return value
 
     safe = redact(config)
@@ -194,9 +227,18 @@ def parse_log_update(payload) -> LogUpdate:
     return LogUpdate(agent, single_line(message), status, progress)
 
 
+MASK_REVEAL_MIN_LENGTH = 24
+
+
 def mask_key(key: str) -> str:
-    """The redacted form shown to the browser for a stored key."""
-    return key[:4] + "..." + key[-4:] if len(key) > 8 else ("***" if key else "")
+    """The redacted form shown to the browser for a stored key.
+
+    Only keys long enough that eight visible characters are a small fraction of
+    them show their ends; shorter ones are fully hidden.
+    """
+    if len(key) >= MASK_REVEAL_MIN_LENGTH:
+        return key[:4] + "..." + key[-4:]
+    return "***" if key else ""
 
 
 def is_masked_key(value) -> bool:
@@ -283,6 +325,16 @@ def prepare_config_payload(payload, stored) -> dict:
                     "enter it again."
                 )
             entry["key"] = restored
+        for field in ("baseUrl", "base_url"):
+            posted = entry.get(field)
+            if isinstance(posted, str) and posted:
+                for item in (stored or {}).get("providers") or []:
+                    original = item.get(field) if isinstance(item, Mapping) else None
+                    if (isinstance(original, str) and item.get("provider") == provider
+                            and original != posted and redact_url(original) == posted):
+                        entry[field] = original
+                        break
         providers.append(entry)
     result["providers"] = providers
     return result
+

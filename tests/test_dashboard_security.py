@@ -10,10 +10,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dashboard.security import (
+    is_secret_field,
     mask_key,
     parse_log_update,
     prepare_config_payload,
     public_config,
+    redact_url,
     single_line,
     valid_local_host,
     valid_mutation_origin,
@@ -65,16 +67,16 @@ class DashboardSecurityTests(unittest.TestCase):
 
     def test_redaction_does_not_modify_stored_keys(self):
         raw = {
-            "providers": [{"provider": "gemini", "key": "EXAMPLEKEY-123456", "valid": True}],
+            "providers": [{"provider": "gemini", "key": "EXAMPLEKEY-1234567890-ABCDEFGH", "valid": True}],
             "nested": {"api_key": "PRIVATE", "client-secret": "VERY_PRIVATE"},
         }
         result = public_config(raw)
-        self.assertEqual(raw["providers"][0]["key"], "EXAMPLEKEY-123456")
+        self.assertEqual(raw["providers"][0]["key"], "EXAMPLEKEY-1234567890-ABCDEFGH")
         self.assertNotIn("key", result["providers"][0])
         self.assertNotIn("api_key", result["nested"])
         self.assertNotIn("client-secret", result["nested"])
         self.assertEqual(result["providers"][0]["valid"], True)
-        self.assertEqual(result["providers"][0]["key_masked"], "EXAM...3456")
+        self.assertEqual(result["providers"][0]["key_masked"], "EXAM...EFGH")
 
     def test_empty_key_and_short_keys(self):
         result = public_config({"providers": [{"key": "a"}, {"key": ""}]})
@@ -138,6 +140,33 @@ class LogUpdateParsingTests(unittest.TestCase):
     def test_single_line_flattens_every_line_break(self):
         self.assertEqual(single_line("a\r\nb\nc\u2028d\x00e"), "a b c d e")
         self.assertEqual(len(single_line("x" * 5000)), 2000)
+
+
+class RedactionTests(unittest.TestCase):
+    def test_secret_field_names_are_matched_by_substring(self):
+        for name in ("key", "api_key", "x-api-key", "openai_api_key", "secret_key", "clientSecret",
+                     "auth_token", "access_token", "Passphrase", "password", "Authorization",
+                     "cookie", "private-key", "bearerToken"):
+            with self.subTest(name=name):
+                self.assertTrue(is_secret_field(name))
+        for name in ("provider", "baseUrl", "model", "status", "statusDetail", "max_tokens",
+                     "valid", "models", "engine", "name"):
+            with self.subTest(name=name):
+                self.assertFalse(is_secret_field(name))
+
+    def test_url_userinfo_and_secret_query_values_are_hidden(self):
+        self.assertEqual(
+            redact_url("http://user:pw@127.0.0.1:1/v1?token=T&model=m&API_KEY=K#frag"),
+            "http://***@127.0.0.1:1/v1?token=***&model=m&API_KEY=***#frag")
+        for plain in ("http://localhost:20128/v1", "localhost:20128", "not a url", ""):
+            self.assertEqual(redact_url(plain), plain)
+        once = redact_url("https://a:b@h/p?key=1")
+        self.assertEqual(redact_url(once), once)
+
+    def test_masks_reveal_only_the_ends_of_long_keys(self):
+        self.assertEqual(mask_key(""), "")
+        self.assertEqual(mask_key("a" * 23), "***")
+        self.assertEqual(mask_key("abcd" + "x" * 16 + "wxyz"), "abcd...wxyz")
 
 
 class PrepareConfigPayloadTests(unittest.TestCase):
