@@ -401,8 +401,10 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
     )
     client_raw, ok = safe_call_brain(b_client, client_sys, f"Goal: {goal}\nAPI Contract:\n{api_clean[:1000]}\nTokens:\n{tokens_clean[:600]}", providers, base_dir)
     client_clean = clean_markdown_block(client_raw, "html") if ok else ""
-    if not client_clean:
-        client_clean = f"<!DOCTYPE html><html><head><title>{goal}</title></head><body><h1>{goal}</h1><p>Client application interface connected to OpenAPI spec.</p></body></html>"
+    if not client_clean.strip():
+        log_swarm_message("06_client", "[ERROR] Client implementation was not generated.", base_dir)
+        update_swarm_status("06_client", "ERROR", "Client generation failed.", 0, base_dir, phase="FAILED: 06_CLIENT")
+        return False
 
     frontend_dir = os.path.join(base_dir, "frontend", "public")
     os.makedirs(frontend_dir, exist_ok=True)
@@ -426,10 +428,14 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
         "covering Happy Path, Edge Cases, Boundary Limits, and Concurrency Scenarios. Output clean Markdown."
     )
     qa_raw, ok = safe_call_brain(b_qa, qa_sys, f"Goal: {goal}\nAPI Contract:\n{api_clean[:1200]}\nBackend Code:\n{code_clean[:1200]}", providers, base_dir)
+    if not ok or not qa_raw.strip():
+        log_swarm_message("07_qa", "[ERROR] QA test matrix missing.", base_dir)
+        update_swarm_status("07_qa", "ERROR", "QA matrix generation failed.", 0, base_dir, phase="FAILED: 07_QA")
+        return False
     qa_dir = os.path.join(base_dir, "specs", "qa")
     os.makedirs(qa_dir, exist_ok=True)
     with open(os.path.join(qa_dir, "test-matrix.md"), "w", encoding="utf-8") as f:
-        f.write((qa_raw or f"# Test Matrix for {goal}\n\n- TC01: Contract Validation\n- TC02: Edge Cases\n").strip() + "\n")
+        f.write(qa_raw.strip() + "\n")
 
     # Generate executable test file
     test_code_sys = (
@@ -437,10 +443,18 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
         "testing the domain entity constraints, input boundaries, and error cases from the backend implementation. "
         "Only output pure valid Python code inside a markdown ```python block."
     )
-    test_code_raw, _ = safe_call_brain(b_qa, test_code_sys, f"Goal: {goal}\nBackend Code:\n{code_clean[:1500]}", providers, base_dir)
+    test_code_raw, tests_ok = safe_call_brain(b_qa, test_code_sys, f"Goal: {goal}\nBackend Code:\n{code_clean[:1500]}", providers, base_dir)
     test_clean = clean_markdown_block(test_code_raw, "python")
-    if not test_clean:
-        test_clean = "import unittest\n\nclass TestApp(unittest.TestCase):\n    def test_domain_entity(self):\n        self.assertTrue(True)\n\nif __name__ == '__main__':\n    unittest.main()\n"
+    if not tests_ok or not test_clean.strip() or "assertTrue(True)" in test_clean:
+        log_swarm_message("07_qa", "[ERROR] QA tests missing or tautological.", base_dir)
+        update_swarm_status("07_qa", "ERROR", "No usable generated tests.", 0, base_dir, phase="FAILED: 07_QA")
+        return False
+    try:
+        compile(test_clean, "generated-test", "exec")
+    except SyntaxError as exc:
+        log_swarm_message("07_qa", f"[ERROR] Generated QA tests have invalid syntax: {exc}", base_dir)
+        update_swarm_status("07_qa", "ERROR", "Invalid test syntax.", 0, base_dir, phase="FAILED: 07_QA")
+        return False
 
     tests_dir = os.path.join(base_dir, "tests")
     os.makedirs(tests_dir, exist_ok=True)
@@ -448,8 +462,8 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
         f.write(test_clean.strip() + "\n")
 
     completed_milestones += 1
-    log_swarm_message("07_qa", "Deliverables locked: specs/qa/test-matrix.md & tests/test_api.py", base_dir)
-    update_swarm_status("07_qa", "REVIEWING", "QA test fixtures compiled and ready for runner.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
+    log_swarm_message("07_qa", "QA tests generated; NOT executed or verified.", base_dir)
+    update_swarm_status("07_qa", "REVIEWING", "Generated test source requires isolated test execution.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
     time.sleep(0.5)
 
     # -------------------------------------------------------------
@@ -466,14 +480,20 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
         "For each category, provide status (PASS / WARN / FAIL) with concrete line references and remediation notes. Output clean Markdown."
     )
     sec_raw, ok = safe_call_brain(b_sec, sec_sys, f"Backend Code:\n{code_clean[:1800]}\n\nDatabase Schema:\n{sql_clean[:1200]}", providers, base_dir)
+    if not ok or not sec_raw.strip():
+        log_swarm_message("08_security", "[ERROR] Security review model did not respond.", base_dir)
+        update_swarm_status("08_security", "ERROR", "No security review generated.", 0, base_dir, phase="FAILED: 08_SECURITY")
+        return False
     sec_dir = os.path.join(base_dir, "specs", "security")
     os.makedirs(sec_dir, exist_ok=True)
     with open(os.path.join(sec_dir, "audit-report.md"), "w", encoding="utf-8") as f:
-        f.write((sec_raw or "# Security Audit Report\n\n- OWASP Top 10: Inspected\n- Secret Zero-Leak: Pass\n").strip() + "\n")
+        f.write("# AI security review (advisory, unverified)\n\n"
+                "No automated scanner or real security test was executed by this stage.\n\n"
+                + sec_raw.strip() + "\n")
 
     completed_milestones += 1
-    log_swarm_message("08_security", "Deliverable locked: specs/security/audit-report.md (Code audit completed)", base_dir)
-    update_swarm_status("08_security", "REVIEWING", "Security audit report finalized.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
+    log_swarm_message("08_security", "Advisory security review generated; security gate NOT verified.", base_dir)
+    update_swarm_status("08_security", "REVIEWING", "Advisory review only; independent scanning required.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
     time.sleep(0.5)
 
     # -------------------------------------------------------------
