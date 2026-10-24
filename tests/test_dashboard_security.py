@@ -2,6 +2,7 @@
 
 import base64
 import unittest
+from pathlib import Path
 
 from dashboard.security import (
     public_config,
@@ -70,6 +71,14 @@ class DashboardSecurityTests(unittest.TestCase):
         self.assertTrue(result["providers"][0]["has_key"])
         self.assertEqual(result["providers"][0]["key_masked"], "***")
         self.assertFalse(result["providers"][1]["has_key"])
+
+    def test_dashboard_cli_never_skips_permissions(self):
+        server_source = (Path(__file__).resolve().parents[1] / "dashboard" / "serve.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("--dangerously-skip-permissions", server_source)
+        self.assertNotIn('"-ExecutionPolicy", "Bypass"', server_source)
+        self.assertIn('"ERROR", "Error communicating with AI engine."', server_source)
 
 
 if __name__ == "__main__":
