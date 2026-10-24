@@ -3033,9 +3033,9 @@
         card.className = `engineer-card ${agent.id === selectedAgentId ? 'active' : ''}`;
         card.innerHTML = `
           <div class="card-top">
-            <span class="card-name">${cfg.num}. ${agent.role}</span>
+            <span class="card-name">${cfg.num}. ${escapeHtml(agent.role)}</span>
             <div style="display: flex; align-items: center; gap: 5px;">
-              <span class="status-pill status-${agent.status}">${agent.status}</span>
+              <span class="status-pill status-${escapeHtml(agent.status)}">${escapeHtml(agent.status)}</span>
               <button type="button" class="desk-info-btn" onclick="openAgentDossier('${cfg.id}', event)" title="View ${escapeHtml(agent.role)} Profile">
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                   <line x1="7" y1="17" x2="17" y2="7"></line>
@@ -3044,7 +3044,7 @@
               </button>
             </div>
           </div>
-          <div class="card-task">${agent.currentTask}</div>
+          <div class="card-task">${escapeHtml(agent.currentTask)}</div>
         `;
         card.addEventListener('click', () => selectAgent(agent.id));
         listContainer.appendChild(card);
@@ -3189,8 +3189,8 @@
               ${generateCharacterSVG(cfg, agent)}
             </div>
             <div class="desk-meta">
-              <span class="desk-role-name">${agent.role}</span>
-              <span class="status-pill status-${agent.status}" id="status-pill-${cfg.id}">${agent.status}</span>
+              <span class="desk-role-name">${escapeHtml(agent.role)}</span>
+              <span class="status-pill status-${escapeHtml(agent.status)}" id="status-pill-${cfg.id}">${escapeHtml(agent.status)}</span>
             </div>
           `;
           desk.addEventListener('click', () => selectAgent(cfg.id));
@@ -3364,7 +3364,7 @@
 
     function escapeHtml(str) {
       if (!str) return '';
-      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     let isCliGenerating = false;
@@ -3572,7 +3572,7 @@
         activeList.forEach(m => {
           const isSel = (m === currentModel);
           html += `
-            <div class="dropdown-item ${isSel ? 'selected' : ''}" onclick="selectModelOption('${cardId}', '${escapeHtml(m)}', event)">
+            <div class="dropdown-item ${isSel ? 'selected' : ''}" data-model="${escapeHtml(m)}" onclick="selectModelOption('${cardId}', this.dataset.model, event)">
               <div class="dropdown-item-left">
                 <svg class="provider-icon-svg" style="width: 13px; height: 13px; color: var(--accent-blue);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
                 <span>${escapeHtml(m)}</span>
@@ -3583,7 +3583,7 @@
         });
       } else if (currentModel) {
         html += `
-          <div class="dropdown-item selected" onclick="selectModelOption('${cardId}', '${escapeHtml(currentModel)}', event)">
+          <div class="dropdown-item selected" data-model="${escapeHtml(currentModel)}" onclick="selectModelOption('${cardId}', this.dataset.model, event)">
             <div class="dropdown-item-left">
               <svg class="provider-icon-svg" style="width: 13px; height: 13px; color: var(--accent-blue);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
               <span>${escapeHtml(currentModel)}</span>

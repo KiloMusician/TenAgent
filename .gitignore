@@ -18,6 +18,7 @@ __pycache__/
 .env.local
 .env.*.local
 specs/swarm-config.json
+specs/swarm-config.json.*.corrupt
 specs/terminal.log
 
 # Track example configuration as template for new clones

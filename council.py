@@ -20,6 +20,9 @@ except Exception:
     pass
 
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+from dashboard.security import scrub_log_text  # one scrubber for every log writer
 SPECS_DIR = os.path.join(ROOT_DIR, "specs")
 CONFIG_FILE = os.path.join(SPECS_DIR, "swarm-config.json")
 STATUS_FILE = os.path.join(SPECS_DIR, "swarm-status.json")
@@ -119,6 +122,7 @@ def get_active_providers(root_dir: str = None) -> list:
 
 def log_council_message(tag: str, message: str, root_dir: str = None):
     """Logs message to specs/terminal.log and mirrors to console."""
+    message = scrub_log_text(message)
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     target_log = os.path.join(root_dir or ROOT_DIR, "specs", "terminal.log")
     log_line = f"[{ts}] [{tag}] {message}\n"

@@ -21,6 +21,33 @@
 
 ---
 
+## Local dashboard operator access
+
+The Virtual Office runs on loopback and requires operator login for its pages,
+logs, configuration, and command API. Start it with `python dashboard/serve.py`
+or the documented launcher. Open the local URL printed in the terminal and
+authenticate with username `tenagent` and the random password printed there.
+
+For a stable operator password, set `TENAGENT_DASHBOARD_PASSWORD` in the shell
+before starting TenAgent. Keep the password private; never commit it or expose
+the dashboard to untrusted hosts. The server intentionally does **not** enable
+cross-origin browser access. The command API's existing CSRF token is an
+additional check, **not** a replacement for operator authorization.
+
+The command box runs PowerShell: anything you type that starts with a known command name, `$ `, `> `, `./`
+or contains `|`, `&&`, `||`, `;`, `>` or `<` is treated as a command and executed with your user's
+rights, even if you meant it as prose for the AI assistant. Phrase prompts without those characters.
+
+Responses carry a Content-Security-Policy with `base-uri 'none'`, `object-src 'none'`,
+`form-action 'self'` and `frame-ancestors 'none'`. It has no `script-src`: the page is built on
+inline scripts and inline `onclick=` handlers, which `script-src 'self'` would block, so escaping
+every value placed into markup remains the defence against script injection.
+
+If the dashboard was previously accessible on a shared network, rotate any
+provider keys saved while that version was in use.
+
+---
+
 ## The Problem TenAgent Solves
 
 When a single AI coding agent is asked to architect schemas, write frontend components, build backend endpoints, create unit tests, and configure Docker containers in a single conversation context, its **context window degrades rapidly**.
@@ -163,7 +190,7 @@ Or run via terminal:
 ```bash
 python dashboard/serve.py
 ```
-Open your browser at **http://localhost:7777/dashboard/**.
+Open your browser at **http://127.0.0.1:7777/dashboard/** (the server listens on 127.0.0.1 only; the terminal prints the exact URL and port).
 
 ### Step 3: Start Building with Your AI Assistant
 Open a separate terminal window in the project folder and launch your AI assistant (e.g. `agy`):

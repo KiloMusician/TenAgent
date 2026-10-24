@@ -11,18 +11,46 @@ import socket
 import webbrowser
 import os
 import sys
+import hashlib
 import secrets
 
 _SESSION_TOKEN = secrets.token_hex(24)
+_DASHBOARD_PASSWORD = os.environ.get('TENAGENT_DASHBOARD_PASSWORD') or secrets.token_urlsafe(24)
 
 DEFAULT_PORT = 7777
+AUTH_FAILURE_DELAY = 0.5  # seconds a wrong Authorization header waits before the 401
+MIN_RECOMMENDED_PASSWORD_LENGTH = 12
 MAX_PORT_ATTEMPTS = 50
 DIRECTORY = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if DIRECTORY not in sys.path:
     sys.path.insert(0, DIRECTORY)
 
+from dashboard.security import (
+    api_fetch_site_allowed,
+    config_problem,
+    is_http_url,
+    is_masked_key,
+    parse_log_update,
+    prepare_config_payload,
+    public_config,
+    redact_text,
+    register_secrets,
+    scrub_log_text as _scrub_log_text,
+    session_cookie_token,
+    single_line,
+    static_target_allowed,
+    tokens_match,
+    valid_local_host,
+    valid_mutation_origin,
+    valid_operator_authorization,
+    valid_static_path,
+)
+
+register_secrets(_DASHBOARD_PASSWORD, _SESSION_TOKEN)  # hidden from every log writer in this process
+
 import json
 import datetime
+from dashboard.statefile import STATE_LOCK, atomic_write_json, update_json_file
 import threading
 import time
 import subprocess
@@ -59,43 +87,76 @@ def is_shell_command(cmd: str) -> bool:
         return True
     return False
 
+def read_stored_config(cfg_file: str):
+    """Returns (config, None); (None, None) if absent or empty; (None, problem) if unusable.
+
+    An unusable file is copied aside once (name = hash of its bytes) so that nothing
+    that happens afterwards can destroy the only copy of the keys it may still hold.
+    """
+    try:
+        with open(cfg_file, "rb") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return None, None
+    except OSError:
+        return None, "cannot be read"
+    if not raw.strip():
+        return None, None
+    try:
+        config = json.loads(raw.decode("utf-8"))
+        problem = config_problem(config)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        config, problem = None, "is not valid JSON"
+    if problem is None:
+        return config, None
+    copy = f"{cfg_file}.{hashlib.sha256(raw).hexdigest()[:16]}.corrupt"
+    try:
+        with open(copy, "xb") as f:
+            f.write(raw)
+    except OSError:
+        pass  # already kept, or not writable: the original stays untouched either way
+    return None, problem
+
+def unusable_config_message(problem: str) -> str:
+    return (f"specs/swarm-config.json {problem}. A copy was kept beside it as *.corrupt. "
+            "Fix or remove the file; saving is refused until then so no keys are lost.")
+
+def scrub_log_text(text: str) -> str:
+    """One line, no credentials: what is allowed to reach terminal.log and the status file."""
+    return _scrub_log_text(text, (_DASHBOARD_PASSWORD, _SESSION_TOKEN))
+
 def append_to_terminal_log(agent: str, text: str):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     os.makedirs(SPECS_DIR, exist_ok=True)
-    clean = clean_ansi(text).strip()
+    clean = scrub_log_text(clean_ansi(text))
     if not clean:
         return
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"[{ts}] [{agent}] {clean}\n")
 
-def safe_write_json(filepath: str, data: dict):
-    try:
-        tmp_path = filepath + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, filepath)
-    except Exception:
-        pass
+def safe_write_json(filepath: str, data: dict) -> bool:
+    """Atomic replace (see dashboard.statefile); returns False if it did not land."""
+    return atomic_write_json(filepath, data)
 
 def set_agent_status_direct(agent_id: str, status: str, process_detail: str, progress: int = None):
-    try:
-        if os.path.exists(STATUS_FILE):
-            with open(STATUS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            updated = False
-            for a in data.get("agents", []):
-                if a.get("id") == agent_id:
-                    a["status"] = status
-                    if process_detail:
-                        a["processDetail"] = process_detail
-                    if progress is not None:
-                        a["progress"] = progress
-                    updated = True
-                    break
-            if updated:
-                safe_write_json(STATUS_FILE, data)
-    except Exception:
-        pass
+    process_detail = scrub_log_text(process_detail) if process_detail else process_detail
+
+    def apply(data):
+        for a in data.get("agents", []):
+            if a.get("id") == agent_id:
+                a["status"] = status
+                if process_detail:
+                    a["processDetail"] = process_detail
+                if progress is not None:
+                    a["progress"] = progress
+                return True
+        return False
+
+    update_json_file(STATUS_FILE, apply)
+
+def child_environment() -> dict:
+    """Environment for spawned commands: ours, minus the dashboard's own password."""
+    return {k: v for k, v in os.environ.items() if k.upper() != "TENAGENT_DASHBOARD_PASSWORD"}
 
 def run_powershell_subprocess(cmd: str, root_dir: str):
     def worker():
@@ -106,8 +167,9 @@ def run_powershell_subprocess(cmd: str, root_dir: str):
                 
             append_to_terminal_log("cli", f"$ {exec_cmd}")
             proc = subprocess.Popen(
-                ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", exec_cmd],
+                ["powershell.exe", "-NoProfile", "-Command", exec_cmd],
                 cwd=root_dir,
+                env=child_environment(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -135,18 +197,15 @@ def run_agy_prompt(prompt: str, root_dir: str):
     def worker():
         try:
             agy_bin = "agy.exe"
-            # Fallback path if not in env PATH directly
-            custom_agy = r"C:\Users\LENOVO\AppData\Local\agy\bin\agy.exe"
-            if os.path.exists(custom_agy):
-                agy_bin = custom_agy
-
+            # Resolve from PATH rather than a developer-specific home directory.
             append_to_terminal_log("01_pm", "Starting Antigravity AI generation...")
             append_to_terminal_log("01_pm", f"Processing: {prompt}")
-            set_agent_status_direct("01_pm", "WORKING", f"Generating response for: {prompt[:40]}...", progress=35)
+            set_agent_status_direct("01_pm", "WORKING", f"Generating response for: {scrub_log_text(prompt)[:40]}...", progress=35)
 
             proc = subprocess.Popen(
-                [agy_bin, "--dangerously-skip-permissions", "-p", prompt],
+                [agy_bin, "-p", prompt],
                 cwd=root_dir,
+                env=child_environment(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -163,12 +222,13 @@ def run_agy_prompt(prompt: str, root_dir: str):
             code = proc.wait()
             if code != 0:
                 append_to_terminal_log("01_pm", f"Process exited with code {code}")
+                set_agent_status_direct("01_pm", "ERROR", f"AI engine exit code {code}.", progress=0)
             else:
-                append_to_terminal_log("01_pm", "Response completed.")
-            set_agent_status_direct("01_pm", "IDLE", "Standing by for founder requests.", progress=100)
+                append_to_terminal_log("01_pm", "Response generated; verification pending.")
+                set_agent_status_direct("01_pm", "REVIEWING", "AI response received; not verified.", progress=90)
         except Exception as e:
             append_to_terminal_log("01_pm", f"Error communicating with agy: {str(e)}")
-            set_agent_status_direct("01_pm", "IDLE", "Error communicating with AI engine.", progress=100)
+            set_agent_status_direct("01_pm", "ERROR", "Error communicating with AI engine.", progress=0)
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -178,6 +238,10 @@ def verify_ai_provider_key(provider_id: str, key: str, base_url: str = "") -> di
     b_url = (base_url or "").strip()
     if not k:
         return {"status": "empty", "valid": False, "statusDetail": "Empty Key", "models": []}
+    if b_url and not is_http_url(b_url):
+        # urllib would happily open file:// and ftp:// URLs.
+        return {"status": "connection_error", "valid": False,
+                "statusDetail": "Base URL must be http(s)", "models": []}
     
     headers = {"User-Agent": "TenAgent/1.0"}
     models = []
@@ -590,14 +654,9 @@ def get_cached_cli_status(root_dir: str) -> dict:
     return data
 
 def update_provider_runtime_status(provider_id: str, status: str, status_detail: str, valid: bool = None):
-    try:
-        cfg_file = os.path.join(SPECS_DIR, "swarm-config.json")
-        if not os.path.exists(cfg_file):
-            return
-        with open(cfg_file, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-        changed = False
-        p_target = provider_id.lower().strip()
+    p_target = provider_id.lower().strip()
+
+    def apply(cfg):
         for p in cfg.get("providers", []):
             cur_p = (p.get("provider") or "").lower().strip()
             if cur_p == p_target or (cur_p in p_target) or (p_target in cur_p):
@@ -606,12 +665,11 @@ def update_provider_runtime_status(provider_id: str, status: str, status_detail:
                     p["statusDetail"] = status_detail
                     if valid is not None:
                         p["valid"] = valid
-                    changed = True
-                break
-        if changed:
-            safe_write_json(cfg_file, cfg)
-    except Exception:
-        pass
+                    return True
+                return False
+        return False
+
+    update_json_file(os.path.join(SPECS_DIR, "swarm-config.json"), apply)
 
 def probe_and_update_local_provider(p: dict) -> bool:
     """Probes a local provider (e.g. 9Router or Ollama) via TCP socket and syncs status. Returns True if changed."""
@@ -658,6 +716,49 @@ def probe_and_update_local_provider(p: dict) -> bool:
             changed = True
     return changed
 
+PROBE_FIELDS = ("status", "statusDetail", "valid")
+
+def _provider_identity(p: dict):
+    return (p.get("provider"), p.get("baseUrl") or p.get("base_url"))
+
+def refresh_local_provider_statuses(cfg_file: str) -> bool:
+    """Probe local providers and merge only the status fields into the live file.
+
+    Probing does socket I/O, so it runs on a snapshot outside the lock; the
+    results are then applied to a fresh read of the file.  Writing the snapshot
+    back (the old behaviour) reverted anything saved while the probe ran.
+    """
+    try:
+        with open(cfg_file, "r", encoding="utf-8") as f:
+            snapshot = json.load(f).get("providers", [])
+    except (OSError, ValueError, AttributeError):
+        return False
+    results = []
+    for original in snapshot if isinstance(snapshot, list) else []:
+        if not isinstance(original, dict):
+            continue
+        probed = dict(original)
+        if probe_and_update_local_provider(probed):
+            results.append((_provider_identity(original),
+                            {k: probed[k] for k in PROBE_FIELDS if k in probed}))
+    if not results:
+        return False
+
+    def apply(cfg):
+        changed = False
+        for p in cfg.get("providers", []):
+            if not isinstance(p, dict):
+                continue
+            for identity, fields in results:
+                if _provider_identity(p) == identity:
+                    for name, value in fields.items():
+                        if p.get(name) != value:
+                            p[name] = value
+                            changed = True
+        return changed
+
+    return update_json_file(cfg_file, apply)
+
 def local_providers_probe_worker(root_dir: str):
     cfg_file = os.path.join(root_dir, "specs", "swarm-config.json")
     while True:
@@ -665,17 +766,7 @@ def local_providers_probe_worker(root_dir: str):
             time.sleep(2.5)
             if not os.path.exists(cfg_file):
                 continue
-            with open(cfg_file, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-
-            providers = cfg.get("providers", [])
-            changed = False
-            for p in providers:
-                if probe_and_update_local_provider(p):
-                    changed = True
-
-            if changed:
-                safe_write_json(cfg_file, cfg)
+            refresh_local_provider_statuses(cfg_file)
         except Exception:
             pass
 
@@ -692,6 +783,10 @@ def call_custom_ai_provider(prompt: str, providers: list, root_dir: str):
             key = p_entry.get("key") or ""
             name = p_entry.get("name") or p_id.upper()
             if not key:
+                continue
+            base_url = (p_entry.get("base_url") or p_entry.get("baseUrl") or "").strip()
+            if base_url and not is_http_url(base_url):
+                append_to_terminal_log("system", f"{name}: base URL must be http(s); skipping.")
                 continue
 
             append_to_terminal_log("system", f"Connecting prompt to {name}...")
@@ -807,15 +902,6 @@ IGNORE_FILES = {
 }
 
 AUTO_GENERATED_FILES = set()
-
-def safe_write_json(filepath: str, data: dict):
-    try:
-        tmp_path = filepath + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, filepath)
-    except Exception:
-        pass
 
 def detect_agent_from_file_path(rel_path: str) -> str:
     norm = rel_path.replace("\\", "/").lower()
@@ -951,49 +1037,47 @@ def handle_task_completion(agent_id: str, root_dir: str):
     log_file = os.path.join(root_dir, "specs", "terminal.log")
     status_file = os.path.join(root_dir, "specs", "swarm-status.json")
     
-    try:
-        if os.path.exists(status_file):
-            with open(status_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            updated = False
+    msg = f"Task completed (100%). Status set to REVIEWING."
+
+    def apply(data):
+        for a in data.get("agents", []):
+            if a.get("id") == agent_id and a.get("status") == "WORKING":
+                a["status"] = "REVIEWING"
+                a["progress"] = 100
+                a["processDetail"] = get_role_stage_message(agent_id, 100)
+                break
+        else:
+            return False
+        data.setdefault("logs", []).append({
+            "timestamp": ts,
+            "agent": agent_id,
+            "message": f"[{agent_id}] {msg}"
+        })
+        data["logs"] = data["logs"][-50:]
+
+        # Natural dependency notification (Honest state without fake execution)
+        if agent_id in ("05_backend", "06_client"):
             for a in data.get("agents", []):
-                if a.get("id") == agent_id and a.get("status") == "WORKING":
-                    a["status"] = "REVIEWING"
-                    a["progress"] = 100
-                    a["processDetail"] = get_role_stage_message(agent_id, 100)
-                    updated = True
-                    break
-            if updated:
-                msg = f"Task completed (100%). Status set to REVIEWING."
-                if "logs" not in data:
-                    data["logs"] = []
-                data["logs"].append({
-                    "timestamp": ts,
-                    "agent": agent_id,
-                    "message": f"[{agent_id}] {msg}"
-                })
-                data["logs"] = data["logs"][-50:]
-                
-                # Natural dependency notification (Honest state without fake execution)
-                if agent_id in ("05_backend", "06_client"):
-                    for a in data.get("agents", []):
-                        if a.get("id") == "07_qa" and a.get("status") in ("IDLE", "WAITING"):
-                            a["status"] = "WAITING"
-                            a["currentTask"] = "Pending test verification for latest backend/client changes."
-                            a["processDetail"] = "Standby: Waiting for automated test execution or QA suite run."
-                
-                with open(log_file, "a", encoding="utf-8") as f:
-                    f.write(f"[{ts}] [{agent_id}] {msg}\n")
+                if a.get("id") == "07_qa" and a.get("status") in ("IDLE", "WAITING"):
+                    a["status"] = "WAITING"
+                    a["currentTask"] = "Pending test verification for latest backend/client changes."
+                    a["processDetail"] = "Standby: Waiting for automated test execution or QA suite run."
 
-                if "project" in data and "agents" in data:
-                    total_p = sum(ag.get("progress", 0) for ag in data["agents"])
-                    data["project"]["overallProgress"] = int(total_p / len(data["agents"]))
+        try:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{ts}] [{agent_id}] {msg}\n")
+        except OSError:
+            pass
 
-                safe_write_json(status_file, data)
-    except Exception:
-        pass
+        if "project" in data and "agents" in data:
+            total_p = sum(ag.get("progress", 0) for ag in data["agents"])
+            data["project"]["overallProgress"] = int(total_p / len(data["agents"]))
+        return True
+
+    update_json_file(status_file, apply)
 
 def handle_file_event(agent_id: str, action_desc: str, root_dir: str):
+    action_desc = scrub_log_text(action_desc)
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     log_file = os.path.join(root_dir, "specs", "terminal.log")
     status_file = os.path.join(root_dir, "specs", "swarm-status.json")
@@ -1011,35 +1095,28 @@ def handle_file_event(agent_id: str, action_desc: str, root_dir: str):
         pass
         
     # 2. Update swarm-status.json with dynamic progress
-    try:
-        if os.path.exists(status_file):
-            with open(status_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            updated = False
-            for a in data.get("agents", []):
-                if a.get("id") == agent_id:
-                    a["processDetail"] = action_desc
-                    a["status"] = "WORKING"
-                    updated = True
-                    break
-            if updated:
-                if "logs" not in data:
-                    data["logs"] = []
-                data["logs"].append({
-                    "timestamp": ts,
-                    "agent": agent_id,
-                    "message": f"[{agent_id}] {action_desc}"
-                })
-                data["logs"] = data["logs"][-50:]
-                
-                # Update overall project progress
-                if "project" in data and "agents" in data:
-                    total_p = sum(ag.get("progress", 0) for ag in data["agents"])
-                    data["project"]["overallProgress"] = int(total_p / len(data["agents"]))
+    def apply(data):
+        for a in data.get("agents", []):
+            if a.get("id") == agent_id:
+                a["processDetail"] = action_desc
+                a["status"] = "WORKING"
+                break
+        else:
+            return False
+        data.setdefault("logs", []).append({
+            "timestamp": ts,
+            "agent": agent_id,
+            "message": f"[{agent_id}] {action_desc}"
+        })
+        data["logs"] = data["logs"][-50:]
 
-                safe_write_json(status_file, data)
-    except Exception:
-        pass
+        # Update overall project progress
+        if "project" in data and "agents" in data:
+            total_p = sum(ag.get("progress", 0) for ag in data["agents"])
+            data["project"]["overallProgress"] = int(total_p / len(data["agents"]))
+        return True
+
+    update_json_file(status_file, apply)
 
 def start_workspace_watcher(root_dir: str):
     def watcher_loop():
@@ -1100,7 +1177,7 @@ def start_workspace_watcher(root_dir: str):
                                 if (stat != old_stat or pdetail != old_detail) and pdetail and pdetail != old_detail:
                                     ts = datetime.datetime.now().strftime("%H:%M:%S")
                                     with open(log_file, "a", encoding="utf-8") as lf:
-                                        lf.write(f"[{ts}] [{aid}] {pdetail}\n")
+                                        lf.write(f"[{ts}] [{aid}] {scrub_log_text(pdetail)}\n")
                                 prev_agent_states[aid] = (stat, pdetail)
                     except Exception:
                         pass
@@ -1111,20 +1188,19 @@ def start_workspace_watcher(root_dir: str):
                     # If an agent was in WORKING state for over 120 seconds with no tool activity, return to IDLE without fake 100%
                     if elapsed >= 120.0:
                         del last_activity_time[aid]
-                        if os.path.exists(status_file):
+                        def go_idle(sdata, aid=aid):
+                            changed = False
+                            for a in sdata.get("agents", []):
+                                if a.get("id") == aid and a.get("status") == "WORKING":
+                                    a["status"] = "IDLE"
+                                    a["processDetail"] = "Standing by for founder instructions."
+                                    changed = True
+                            return changed
+
+                        if update_json_file(status_file, go_idle):
                             try:
-                                with open(status_file, "r", encoding="utf-8") as f:
-                                    sdata = json.load(f)
-                                changed = False
-                                for a in sdata.get("agents", []):
-                                    if a.get("id") == aid and a.get("status") == "WORKING":
-                                        a["status"] = "IDLE"
-                                        a["processDetail"] = "Standing by for founder instructions."
-                                        changed = True
-                                if changed:
-                                    safe_write_json(status_file, sdata)
-                                    prev_status_mtime = os.path.getmtime(status_file)
-                            except Exception:
+                                prev_status_mtime = os.path.getmtime(status_file)
+                            except OSError:
                                 pass
 
                 # 3. Workspace filesystem watcher for all project code and specs
@@ -1164,7 +1240,27 @@ def start_workspace_watcher(root_dir: str):
     t = threading.Thread(target=watcher_loop, daemon=True)
     t.start()
 
+STATIC_STATE_FILES = ('/specs/swarm-status.json', '/specs/terminal.log')
+STATIC_PREFIXES = ('/dashboard/', '/assets/', '/favicon.')
+SECURITY_HEADERS = (
+    ('X-Frame-Options', 'DENY'),
+    # No script-src / default-src on purpose: index.html is built on inline <script> blocks and
+    # inline onclick= handlers, which a script-src of 'self' would block.  Removing those
+    # handlers (and then adding script-src 'self') is the way to a stricter policy.
+    ('Content-Security-Policy',
+     "base-uri 'none'; object-src 'none'; form-action 'self'; frame-ancestors 'none'"),
+    ('X-Content-Type-Options', 'nosniff'),
+    ('Referrer-Policy', 'no-referrer'),
+    ('Cross-Origin-Resource-Policy', 'same-origin'),
+)
+MAX_BODY_BYTES = 1024 * 1024
+MAX_DRAIN_BYTES = 16 * 1024 * 1024  # how much of a rejected body is read and discarded
+_BAD_BODY = object()  # returned by _read_json_body after it has sent the error reply
+
 class SwarmHandler(http.server.SimpleHTTPRequestHandler):
+    # Drop clients that stall mid-request instead of pinning a thread forever.
+    timeout = 30
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=DIRECTORY, **kwargs)
 
@@ -1172,23 +1268,127 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
         # Silence routine HTTP polling logs to keep the console clean
         pass
 
+    def list_directory(self, path):
+        # Never enumerate directories; only named files are served.
+        self.send_error(404, "Not Found")
+        return None
+
     def end_headers(self):
-        # Strict CORS: Only allow localhost / 127.0.0.1 origins (Zero Wildcard)
-        origin = self.headers.get('Origin', '') if hasattr(self, 'headers') and self.headers else ''
-        if origin and (origin.startswith('http://localhost:') or origin.startswith('http://127.0.0.1:')):
-            self.send_header('Access-Control-Allow-Origin', origin)
-            self.send_header('Vary', 'Origin')
-            self.send_header('Access-Control-Allow-Credentials', 'true')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-TenAgent-Token')
+        # This loopback dashboard intentionally does not expose CORS permissions.
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
+        # The page controls a command runner: never let another site frame it,
+        # sniff its responses into scripts, or embed them cross-origin.
+        for name, value in SECURITY_HEADERS:
+            self.send_header(name, value)
         super().end_headers()
 
     def do_OPTIONS(self):
-        try:
-            self.send_response(200)
+        self.send_response(405)
+        self.send_header('Allow', 'GET, POST')
+        self.end_headers()
+
+    def do_HEAD(self):
+        # Avoid inherited SimpleHTTPRequestHandler HEAD bypassing GET guards.
+        if not self._require_dashboard_access():
+            return
+        if not self._api_read_allowed(self.path.split('?')[0].split('#')[0]):
+            return
+        self.send_response(405)
+        self.send_header('Allow', 'GET, POST')
+        self.end_headers()
+
+    def _api_read_allowed(self, clean_path):
+        """Sec-Fetch-Site rule for /api/* reads (pages and static files are not affected)."""
+        if clean_path.startswith('/api/') and not api_fetch_site_allowed(
+                self.headers.get('Sec-Fetch-Site')):
+            self.send_json_response({"error": "Cross-site request denied"}, 403)
+            return False
+        return True
+
+    def _require_dashboard_access(self, mutation=False):
+        port = self.server.server_address[1]
+        host = self.headers.get('Host')
+        if not valid_local_host(host, port):
+            self.send_json_response({"error": "Invalid local Host"}, 403)
+            return False
+        if mutation and not valid_mutation_origin(
+            self.headers.get('Origin'), host,
+            self.headers.get('Sec-Fetch-Site'), port
+        ):
+            self.send_json_response({"error": "Cross-origin operation denied"}, 403)
+            return False
+        if not valid_operator_authorization(
+            self.headers.get('Authorization'), _DASHBOARD_PASSWORD
+        ):
+            if self.headers.get('Authorization'):
+                # Credentials were offered and were wrong: make guessing slow. Only
+                # this request's thread waits; nothing global is held.
+                time.sleep(AUTH_FAILURE_DELAY)
+            self.send_response(401)
+            self.send_header(
+                'WWW-Authenticate',
+                'Basic realm="TenAgent local operator", charset="UTF-8"',
+            )
+            self.send_header('Content-Length', '0')
             self.end_headers()
-        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            return False
+        return True
+
+    def _declared_length(self):
+        """Content-Length as a non-negative int, or None when absent/invalid."""
+        raw = self.headers.get('Content-Length')
+        if raw is None:
+            return 0
+        raw = raw.strip()
+        return int(raw) if raw.isascii() and raw.isdigit() else None
+
+    def _read_json_body(self):
+        """Read and parse a JSON object body, or send the error and return _BAD_BODY."""
+        if self.headers.get('Transfer-Encoding'):
+            self.send_json_response({"error": "Chunked request bodies are not supported"}, 411)
+            return _BAD_BODY
+        length = self._declared_length()
+        if length is None:
+            self.send_json_response({"error": "Invalid Content-Length"}, 400)
+            return _BAD_BODY
+        if length > MAX_BODY_BYTES:
+            self.send_json_response({"error": "Request body too large"}, 413)
+            return _BAD_BODY
+        try:
+            raw = self.rfile.read(length)
+        except OSError:
+            self.close_connection = True
+            return _BAD_BODY
+        self._consumed = length
+        if len(raw) != length:
+            self.send_json_response({"error": "Incomplete request body"}, 400)
+            return _BAD_BODY
+        try:
+            payload = json.loads(raw.decode('utf-8'))
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            self.send_json_response({"error": "Request body is not valid JSON"}, 400)
+            return _BAD_BODY
+        if not isinstance(payload, dict):
+            self.send_json_response({"error": "JSON object required"}, 400)
+            return _BAD_BODY
+        return payload
+
+    def _discard_unread_body(self):
+        """Drain a rejected request's body so closing does not reset the connection.
+
+        Windows answers data that arrives after close() with a reset, which can
+        make the client lose the 401/403/413 we already sent.
+        """
+        try:
+            remaining = min(self._declared_length() or 0, MAX_DRAIN_BYTES)
+            remaining -= getattr(self, '_consumed', 0)
+            self.wfile.flush()
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except (OSError, ValueError):
             pass
 
     def send_json_response(self, data, status_code=200):
@@ -1208,7 +1408,13 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             pass
 
     def do_GET(self):
-        clean_path = self.path.split('?')[0]
+        if not self._require_dashboard_access():
+            return
+        # http.server drops '?query' and '#fragment' before touching the disk,
+        # so every check below must look at the same part of the target.
+        clean_path = self.path.split('?')[0].split('#')[0]
+        if not self._api_read_allowed(clean_path):
+            return
 
         # Redirect root to /dashboard/
         if clean_path == '/' or clean_path == '':
@@ -1299,35 +1505,34 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                     except Exception:
                         pass
 
+            _, problem = read_stored_config(cfg_file)
+            if problem:
+                self.send_json_response(
+                    {"error": unusable_config_message(problem), "config_error": True}, 500)
+                return
             if os.path.exists(cfg_file):
                 try:
+                    # Merges probe results into the file (credentials untouched),
+                    # then serve what is on disk.
+                    refresh_local_provider_statuses(cfg_file)
                     with open(cfg_file, "r", encoding="utf-8") as f:
-                        saved = json.load(f)
-                        cfg.update(saved)
-                        if "providers" in cfg:
-                            probe_changed = False
-                            for p in cfg["providers"]:
-                                if probe_and_update_local_provider(p):
-                                    probe_changed = True
-                                k = p.get("key", "")
-                                p["has_key"] = bool(k and k.strip())
-                                if k:
-                                    p["key_masked"] = k[:4] + "..." + k[-4:] if len(k) > 8 else "***"
-                                else:
-                                    p["key_masked"] = ""
-                                # CRITICAL SECURITY: Never return plaintext key in HTTP response!
-                                p.pop("key", None)
-                            if probe_changed:
-                                safe_write_json(cfg_file, cfg)
+                        cfg.update(json.load(f))
                 except Exception:
                     pass
             cfg["cli"] = get_cached_cli_status(DIRECTORY)
-            self.send_json_response(cfg)
+            self.send_json_response(public_config(cfg))
             return
 
-        # Whitelist and Path Sanitization (Zero .env, zero config, zero path traversal leak)
-        if '..' in clean_path or '/.' in clean_path or clean_path.startswith('/.'):
-            self.send_error(403, "Access Forbidden: Path traversal or hidden files blocked")
+        if clean_path == '/dashboard':
+            self.send_response(301)
+            self.send_header('Location', '/dashboard/')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+
+        # Validate raw static URLs before SimpleHTTPRequestHandler decodes them.
+        if not valid_static_path(clean_path):
+            self.send_error(403, "Access Forbidden: Encoded or hidden path")
             return
 
         lower_path = clean_path.lower()
@@ -1335,9 +1540,14 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error(403, "Access Forbidden: Protected system resource")
             return
 
-        allowed_prefixes = ('/dashboard/', '/assets/', '/specs/swarm-status.json', '/specs/terminal.log', '/favicon.')
-        if not any(clean_path.startswith(p) for p in allowed_prefixes) and clean_path not in ('/dashboard', '/'):
+        if clean_path not in STATIC_STATE_FILES and not clean_path.startswith(STATIC_PREFIXES):
             self.send_error(404, "Not Found")
+            return
+
+        # Judge the file http.server will really open (symlinks, junctions).
+        if not static_target_allowed(
+                DIRECTORY, self.translate_path(clean_path), (STATUS_FILE, LOG_FILE)):
+            self.send_error(403, "Access Forbidden: Protected system resource")
             return
 
         try:
@@ -1346,37 +1556,38 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             pass
 
     def do_POST(self):
+        try:
+            self._handle_post()
+        finally:
+            self._discard_unread_body()
+
+    def _handle_post(self):
+        if not self._require_dashboard_access(mutation=True):
+            return
         if self.path == '/api/config':
-            try:
-                content_length = int(self.headers.get('Content-Length', 0))
-                body = self.rfile.read(content_length).decode('utf-8')
-            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            payload = self._read_json_body()
+            if payload is _BAD_BODY:
                 return
             try:
-                payload = json.loads(body)
-                providers = payload.get("providers", [])
-                
                 cfg_file = os.path.join(SPECS_DIR, "swarm-config.json")
-                existing_keys = {}
-                if os.path.exists(cfg_file):
-                    try:
-                        with open(cfg_file, "r", encoding="utf-8") as f:
-                            saved_cfg = json.load(f)
-                            for sp in saved_cfg.get("providers", []):
-                                sp_id = sp.get("provider", "")
-                                if sp_id and sp.get("key"):
-                                    existing_keys[sp_id] = sp.get("key")
-                    except Exception:
-                        pass
+                stored_cfg, problem = read_stored_config(cfg_file)
+                if problem:
+                    self.send_json_response({"error": unusable_config_message(problem)}, 409)
+                    return
+                try:
+                    payload = prepare_config_payload(payload, stored_cfg)
+                except ValueError as exc:
+                    self.send_json_response({"error": str(exc)}, 400)
+                    return
+                providers = payload["providers"]
 
                 def validate_single_provider(p_entry):
                     p_id = (p_entry.get("provider") or "").strip()
                     k = (p_entry.get("key") or "").strip()
                     b_url = (p_entry.get("baseUrl") or p_entry.get("base_url") or "").strip()
-                    if ("..." in k or k == "***") and p_id in existing_keys:
-                        k = existing_keys[p_id]
+                    if "key" in p_entry:
                         p_entry["key"] = k
-                    
+
                     if b_url:
                         p_entry["baseUrl"] = b_url
                         p_entry["base_url"] = b_url
@@ -1398,48 +1609,56 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(providers), 5)) as executor:
                         list(executor.map(validate_single_provider, providers))
 
-                os.makedirs(SPECS_DIR, exist_ok=True)
-                with open(cfg_file, "w", encoding="utf-8") as f:
-                    json.dump(payload, f, indent=2)
+                with STATE_LOCK:
+                    saved = atomic_write_json(cfg_file, payload)
+                if not saved:
+                    self.send_json_response({"error": "Could not save configuration"}, 500)
+                    return
 
-                # CRITICAL SECURITY: Never return raw plaintext keys to client!
-                safe_payload = json.loads(json.dumps(payload))
-                for sp in safe_payload.get("providers", []):
-                    raw_k = sp.pop("key", None)
-                    sp["has_key"] = bool(raw_k and str(raw_k).strip())
-                    sp["key_masked"] = raw_k[:4] + "..." + raw_k[-4:] if raw_k and len(raw_k) > 8 else ("***" if raw_k else "")
-
-                self.send_json_response({"ok": True, "config": safe_payload})
+                self.send_json_response({"ok": True, "config": public_config(payload)})
                 return
-            except Exception as e:
-                self.send_json_response({"error": str(e)}, 400)
+            except Exception:
+                self.send_json_response({"error": "Invalid configuration"}, 400)
                 return
 
         if self.path.startswith('/api/models'):
+            payload = self._read_json_body()
+            if payload is _BAD_BODY:
+                return
             try:
-                content_length = int(self.headers.get('Content-Length', 0))
-                body = self.rfile.read(content_length).decode('utf-8')
-                payload = json.loads(body)
+                fields = [payload.get(name) for name in ("provider", "key", "baseUrl", "base_url")]
+                if any(value is not None and not isinstance(value, str) for value in fields):
+                    raise ValueError("provider, key and baseUrl must be strings")
                 p_id = (payload.get("provider") or "").strip()
                 k = (payload.get("key") or "").strip()
                 b_url = (payload.get("baseUrl") or payload.get("base_url") or "").strip()
-                if ("..." in k or k == "***"):
+                if is_masked_key(k):
+                    stored_cfg = None
                     cfg_file = os.path.join(SPECS_DIR, "swarm-config.json")
-                    if os.path.exists(cfg_file):
-                        try:
-                            with open(cfg_file, "r", encoding="utf-8") as f:
-                                scfg = json.load(f)
-                                for sp in scfg.get("providers", []):
-                                    if sp.get("provider") == p_id and sp.get("key"):
-                                        k = sp.get("key")
-                                        break
-                        except Exception:
-                            pass
+                    try:
+                        with open(cfg_file, "r", encoding="utf-8") as f:
+                            stored_cfg = json.load(f)
+                    except (OSError, ValueError):
+                        pass
+                    # A masked placeholder is only ever replaced by the stored
+                    # key it came from, never sent to a provider as-is.
+                    asked = {"provider": p_id, "key": k}
+                    for field in ("baseUrl", "base_url"):
+                        if field in payload:
+                            asked[field] = payload[field]
+                    k = prepare_config_payload(
+                        {"providers": [asked]}, stored_cfg
+                    )["providers"][0]["key"]
                 ver = verify_ai_provider_key(p_id, k, base_url=b_url)
                 self.send_json_response(ver)
                 return
-            except Exception as e:
-                self.send_json_response({"status": "error", "valid": False, "models": [], "error": str(e)}, 400)
+            except ValueError as exc:
+                self.send_json_response(
+                    {"status": "error", "valid": False, "models": [], "error": str(exc)}, 400)
+                return
+            except Exception:
+                self.send_json_response(
+                    {"status": "error", "valid": False, "models": [], "error": "Invalid request"}, 400)
                 return
 
         if self.path == '/api/command':
@@ -1461,23 +1680,20 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             # Security Check 3: CSRF Session Token verification
             req_token = self.headers.get('X-TenAgent-Token', '').strip()
             if not req_token:
-                cookie_hdr = self.headers.get('Cookie', '')
-                for cookie_part in cookie_hdr.split(';'):
-                    if 'tenagent_token=' in cookie_part:
-                        req_token = cookie_part.split('tenagent_token=')[1].strip()
-                        break
-            if not req_token or req_token != _SESSION_TOKEN:
+                req_token = session_cookie_token(self.headers.get('Cookie', ''))
+            if not tokens_match(req_token, _SESSION_TOKEN):
                 self.send_json_response({"error": "Forbidden: Invalid or missing CSRF session token"}, 403)
                 return
 
-            try:
-                content_length = int(self.headers.get('Content-Length', 0))
-                body = self.rfile.read(content_length).decode('utf-8')
-            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            payload = self._read_json_body()
+            if payload is _BAD_BODY:
                 return
             try:
-                payload = json.loads(body)
-                cmd = payload.get('command', '').strip()
+                command = payload.get('command', '')
+                if not isinstance(command, str):
+                    self.send_json_response({"error": "command must be a string"}, 400)
+                    return
+                cmd = command.strip()
                 if not cmd:
                     self.send_json_response({"error": "Empty command"}, 400)
                     return
@@ -1487,7 +1703,7 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 
                 # 1. Log founder prompt to terminal
                 with open(LOG_FILE, "a", encoding="utf-8") as f:
-                    f.write(f"[{ts}] [founder] > {cmd}\n")
+                    f.write(f"[{ts}] [founder] > {scrub_log_text(cmd)}\n")
                 
                 # Read swarm-config.json to check engine mode
                 cfg = {"engine": "native", "providers": []}
@@ -1549,17 +1765,13 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
         if self.path == '/api/log':
-            try:
-                content_length = int(self.headers.get('Content-Length', 0))
-                body = self.rfile.read(content_length).decode('utf-8')
-            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            payload = self._read_json_body()
+            if payload is _BAD_BODY:
                 return
             try:
-                payload = json.loads(body)
-                agent_id = payload.get('agent', 'cli')
-                message = payload.get('message', '').strip()
-                status = payload.get('status')
-                progress = payload.get('progress')
+                update = parse_log_update(payload)
+                agent_id, message = update.agent, scrub_log_text(update.message)
+                status, progress = update.status, update.progress
 
                 if message:
                     ts = datetime.datetime.now().strftime("%H:%M:%S")
@@ -1567,10 +1779,8 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                     with open(LOG_FILE, "a", encoding="utf-8") as f:
                         f.write(f"[{ts}] [{agent_id}] {message}\n")
 
-                if os.path.exists(STATUS_FILE) and (status or progress is not None or message):
-                    try:
-                        with open(STATUS_FILE, "r", encoding="utf-8") as f:
-                            data = json.load(f)
+                if status or progress is not None or message:
+                    def apply(data):
                         for a in data.get("agents", []):
                             if a.get("id") == agent_id:
                                 if message:
@@ -1578,11 +1788,11 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                                 if status:
                                     a["status"] = status
                                 if progress is not None:
-                                    a["progress"] = max(0, min(100, int(progress)))
-                                break
-                        safe_write_json(STATUS_FILE, data)
-                    except Exception:
-                        pass
+                                    a["progress"] = progress
+                                return True
+                        return False
+
+                    update_json_file(STATUS_FILE, apply)
 
                 self.send_json_response({"ok": True})
                 return
@@ -1621,14 +1831,22 @@ class ThreadedSwarmServer(BaseServerClass):
             return
         super().handle_error(request, client_address)
 
+def _something_listens(family, host, port: int) -> bool:
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.2)
+            probe.connect((host, port))
+            return True
+    except OSError:
+        return False
+
 def is_port_available(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.settimeout(0.2)
-        try:
-            probe.connect(('127.0.0.1', port))
-            return False
-        except OSError:
-            pass
+    # A listener on [::1] would receive connections that clients (which try ::1
+    # first for "localhost") mean for us, so such a port is not usable either.
+    if _something_listens(socket.AF_INET, '127.0.0.1', port):
+        return False
+    if socket.has_ipv6 and _something_listens(socket.AF_INET6, '::1', port):
+        return False
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
@@ -1666,12 +1884,20 @@ def main():
 
     httpd, port = start_server_with_auto_port(DEFAULT_PORT, MAX_PORT_ATTEMPTS)
     with httpd:
-        url = f"http://localhost:{port}/dashboard/"
+        url = f"http://127.0.0.1:{port}/dashboard/"  # exactly what the server binds
         print(f"\n=======================================================")
         if port != DEFAULT_PORT:
             print(f"[TenAgent] Port {DEFAULT_PORT} is in use (by another project or dev server).")
             print(f"[TenAgent] Automatically switched to available port: {port}")
         print(f"TenAgent Virtual Office v1.0.1 Running at: {url}")
+        print("Local operator username: tenagent")
+        print(f"Local operator password: {_DASHBOARD_PASSWORD}")
+        print("Set TENAGENT_DASHBOARD_PASSWORD to use a stable password.")
+        if (os.environ.get('TENAGENT_DASHBOARD_PASSWORD')
+                and len(_DASHBOARD_PASSWORD) < MIN_RECOMMENDED_PASSWORD_LENGTH):
+            print(f"[TenAgent] WARNING: TENAGENT_DASHBOARD_PASSWORD is shorter than "
+                  f"{MIN_RECOMMENDED_PASSWORD_LENGTH} characters and is easy to guess. "
+                  "Anything on this machine that can reach the port can try it; use a longer one.")
         print(f"Serving live specs from: {DIRECTORY}")
         print(f"Press Ctrl+C to stop the server.")
         print(f"=======================================================\n")
