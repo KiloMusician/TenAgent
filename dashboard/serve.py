@@ -1208,7 +1208,11 @@ STATIC_STATE_FILES = ('/specs/swarm-status.json', '/specs/terminal.log')
 STATIC_PREFIXES = ('/dashboard/', '/assets/', '/favicon.')
 SECURITY_HEADERS = (
     ('X-Frame-Options', 'DENY'),
-    ('Content-Security-Policy', "frame-ancestors 'none'"),
+    # No script-src / default-src on purpose: index.html is built on inline <script> blocks and
+    # inline onclick= handlers, which a script-src of 'self' would block.  Removing those
+    # handlers (and then adding script-src 'self') is the way to a stricter policy.
+    ('Content-Security-Policy',
+     "base-uri 'none'; object-src 'none'; form-action 'self'; frame-ancestors 'none'"),
     ('X-Content-Type-Options', 'nosniff'),
     ('Referrer-Policy', 'no-referrer'),
     ('Cross-Origin-Resource-Policy', 'same-origin'),

@@ -34,6 +34,11 @@ the dashboard to untrusted hosts. The server intentionally does **not** enable
 cross-origin browser access. The command API's existing CSRF token is an
 additional check, **not** a replacement for operator authorization.
 
+Responses carry a Content-Security-Policy with `base-uri 'none'`, `object-src 'none'`,
+`form-action 'self'` and `frame-ancestors 'none'`. It has no `script-src`: the page is built on
+inline scripts and inline `onclick=` handlers, which `script-src 'self'` would block, so escaping
+every value placed into markup remains the defence against script injection.
+
 If the dashboard was previously accessible on a shared network, rotate any
 provider keys saved while that version was in use.
 

@@ -1214,7 +1214,8 @@ class ResponseHeaderTests(DashboardCase):
 
     EXPECTED = {
         "x-frame-options": "DENY",
-        "content-security-policy": "frame-ancestors 'none'",
+        "content-security-policy": ("base-uri 'none'; object-src 'none'; "
+                                    "form-action 'self'; frame-ancestors 'none'"),
         "x-content-type-options": "nosniff",
         "referrer-policy": "no-referrer",
         "cross-origin-resource-policy": "same-origin",
@@ -1243,6 +1244,31 @@ class ResponseHeaderTests(DashboardCase):
         for label, response in cases.items():
             with self.subTest(case=label):
                 self.assert_hardened(response, label)
+
+    def test_policy_has_the_non_script_directives_and_no_script_src(self):
+        policy = self.get("/dashboard/").header("content-security-policy")
+        directives = {part.split()[0]: part.split()[1:] for part in policy.split(";") if part.strip()}
+        self.assertEqual(directives["base-uri"], ["'none'"])
+        self.assertEqual(directives["object-src"], ["'none'"])
+        self.assertEqual(directives["form-action"], ["'self'"])
+        self.assertEqual(directives["frame-ancestors"], ["'none'"])
+        # The page is built on inline scripts and onclick= handlers, so script-src
+        # 'self' (or default-src) would break it; see the comment in serve.py.
+        for forbidden in ("script-src", "default-src", "style-src"):
+            self.assertNotIn(forbidden, directives)
+
+    def test_the_page_does_not_use_what_the_policy_forbids(self):
+        page = self.get("/dashboard/").text().lower()
+        for tag in ("<base", "<object", "<embed", "<form", "<iframe"):
+            self.assertNotIn(tag, page)
+
+    def test_readme_explains_why_there_is_no_script_policy(self):
+        readme = (self.serve_root() / "README.md").read_text(encoding="utf-8")
+        self.assertIn("inline", readme)
+        self.assertIn("script-src", readme)
+
+    def serve_root(self):
+        return Path(self.serve.__file__).resolve().parents[1]
 
     def test_headers_do_not_break_the_page_or_its_own_requests(self):
         page = self.get("/dashboard/")
