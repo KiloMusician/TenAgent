@@ -52,6 +52,16 @@ def valid_mutation_origin(
     return origin is None or origin.lower() == f"http://{host.lower()}"
 
 
+def valid_static_path(path: str) -> bool:
+    """Prevent URL decoding from bypassing the raw static-file path filter."""
+    if not path or '%' in path or '\\\\' in path:
+        return False
+    return not any(
+        segment in ('.', '..') or segment.startswith('.')
+        for segment in path.split('/') if segment
+    )
+
+
 def public_config(config: Mapping) -> dict:
     """Return an independently redacted configuration without mutating input."""
     def redact(value):
