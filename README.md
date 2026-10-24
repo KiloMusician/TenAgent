@@ -34,6 +34,10 @@ the dashboard to untrusted hosts. The server intentionally does **not** enable
 cross-origin browser access. The command API's existing CSRF token is an
 additional check, **not** a replacement for operator authorization.
 
+The command box runs PowerShell: anything you type that starts with a known command name, `$ `, `> `, `./`
+or contains `|`, `&&`, `||`, `;`, `>` or `<` is treated as a command and executed with your user's
+rights, even if you meant it as prose for the AI assistant. Phrase prompts without those characters.
+
 Responses carry a Content-Security-Policy with `base-uri 'none'`, `object-src 'none'`,
 `form-action 'self'` and `frame-ancestors 'none'`. It has no `script-src`: the page is built on
 inline scripts and inline `onclick=` handlers, which `script-src 'self'` would block, so escaping

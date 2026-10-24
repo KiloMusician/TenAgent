@@ -88,6 +88,15 @@ class LaunchTests(DashboardCase):
         _, output = self.run_main()
         self.assertNotIn("WARNING", output)
 
+    def test_readme_says_the_command_box_runs_powershell(self):
+        readme = (MODULE_ROOT / "README.md").read_text(encoding="utf-8")
+        section = readme.split("## Local dashboard operator access", 1)[1].split("\n---", 1)[0]
+        flat = " ".join(section.split())
+        self.assertIn("PowerShell", flat)
+        for character in ("|", ";", "&", ">", "<"):
+            self.assertIn(character, flat)
+        self.assertIn("treated as a command", flat)
+
     def test_readme_points_at_the_bound_address(self):
         readme = (MODULE_ROOT / "README.md").read_text(encoding="utf-8")
         self.assertNotIn("localhost:7777", readme)
