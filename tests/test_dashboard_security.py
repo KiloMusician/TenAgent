@@ -1,8 +1,13 @@
 """Regression coverage for the localhost dashboard's access policy."""
 
 import base64
+import sys
 import unittest
 from pathlib import Path
+
+# Allow ``python -I -m unittest discover -s tests`` (isolated mode does not
+# put the repository root on sys.path).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dashboard.security import (
     public_config,
