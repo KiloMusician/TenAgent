@@ -108,6 +108,10 @@ def set_agent_status_direct(agent_id: str, status: str, process_detail: str, pro
 
     update_json_file(STATUS_FILE, apply)
 
+def child_environment() -> dict:
+    """Environment for spawned commands: ours, minus the dashboard's own password."""
+    return {k: v for k, v in os.environ.items() if k.upper() != "TENAGENT_DASHBOARD_PASSWORD"}
+
 def run_powershell_subprocess(cmd: str, root_dir: str):
     def worker():
         try:
@@ -119,6 +123,7 @@ def run_powershell_subprocess(cmd: str, root_dir: str):
             proc = subprocess.Popen(
                 ["powershell.exe", "-NoProfile", "-Command", exec_cmd],
                 cwd=root_dir,
+                env=child_environment(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -154,6 +159,7 @@ def run_agy_prompt(prompt: str, root_dir: str):
             proc = subprocess.Popen(
                 [agy_bin, "-p", prompt],
                 cwd=root_dir,
+                env=child_environment(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

@@ -1194,6 +1194,53 @@ class ResponseHeaderTests(DashboardCase):
         self.assertNotIn("default-src", page.header("content-security-policy", ""))
 
 
+class ChildProcessTests(DashboardCase):
+    """Commands the dashboard starts must not inherit its own credentials."""
+
+    def run_launcher(self, name, *args):
+        import threading
+        serve = self.serve
+        captured = {}
+
+        class FakeProcess:
+            def __init__(self, argv, **kwargs):
+                captured["argv"], captured["kwargs"] = argv, kwargs
+                self.stdout = type("S", (), {"readline": lambda s: "", "close": lambda s: None})()
+
+            def wait(self):
+                return 0
+
+        original_popen = serve.subprocess.Popen
+        serve.subprocess.Popen = FakeProcess
+        self.addCleanup(setattr, serve.subprocess, "Popen", original_popen)
+        launcher = self._saved[name]  # the real function, not the harness recorder
+        before = set(threading.enumerate())
+        launcher(*args)
+        for thread in set(threading.enumerate()) - before:
+            thread.join(5)
+        return captured
+
+    def test_shell_and_agent_children_do_not_inherit_the_dashboard_password(self):
+        import os
+        os.environ["TENAGENT_DASHBOARD_PASSWORD"] = "env-password-FAKE-123"
+        os.environ["TENAGENT_TEST_MARKER"] = "kept"
+        self.addCleanup(os.environ.pop, "TENAGENT_DASHBOARD_PASSWORD", None)
+        self.addCleanup(os.environ.pop, "TENAGENT_TEST_MARKER", None)
+        for name, args in (("run_powershell_subprocess", ("echo hi", str(self.root))),
+                           ("run_agy_prompt", ("hello", str(self.root)))):
+            with self.subTest(launcher=name):
+                captured = self.run_launcher(name, *args)
+                env = captured["kwargs"].get("env")
+                self.assertIsNotNone(env, "child must get an explicit environment")
+                self.assertNotIn("TENAGENT_DASHBOARD_PASSWORD", env)
+                self.assertEqual(env.get("TENAGENT_TEST_MARKER"), "kept")
+
+    def test_prompts_are_passed_as_one_argument_never_through_a_shell(self):
+        captured = self.run_launcher("run_agy_prompt", "hello; calc & whoami", str(self.root))
+        self.assertEqual(captured["argv"], ["agy.exe", "-p", "hello; calc & whoami"])
+        self.assertFalse(captured["kwargs"].get("shell"))
+
+
 class BindingTests(DashboardCase):
     def test_server_listens_on_loopback_only(self):
         self.assertEqual(self.httpd.server_address[0], "127.0.0.1")
