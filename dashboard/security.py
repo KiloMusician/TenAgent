@@ -3,6 +3,7 @@
 import base64
 import binascii
 import hmac
+import os
 import re
 from collections.abc import Mapping
 from typing import NamedTuple
@@ -54,14 +55,63 @@ def valid_mutation_origin(
     return origin is None or origin.lower() == f"http://{host.lower()}"
 
 
+STATIC_EXTENSIONS = frozenset({
+    ".html", ".css", ".js", ".json", ".log", ".txt",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg",
+})
+_STATIC_FORBIDDEN_CHARS = re.compile(r'[%\\:*?"<>|\x00-\x1f\x7f-\U0010ffff]')
+# Win32 maps these names (with or without an extension) to devices.
+_WINDOWS_DEVICE_NAME = re.compile(
+    r"(con|prn|aux|nul|conin\$|conout\$|clock\$|(com|lpt)[0-9])(\..*)?", re.IGNORECASE
+)
+
+
 def valid_static_path(path: str) -> bool:
-    """Prevent URL decoding from bypassing the raw static-file path filter."""
-    if not path or '%' in path or '\\' in path:
+    """Decide from the raw request path whether it may name a static file.
+
+    The check must judge the same string the file system will see, so anything
+    that http.server or Windows would reinterpret is refused outright: percent
+    escapes, backslashes, ':' (drive letters and ``name::$DATA`` streams),
+    trailing dots/spaces (stripped by Win32), device names, hidden segments and
+    any file whose extension is not in STATIC_EXTENSIONS.
+    """
+    if not path or not path.startswith('/') or _STATIC_FORBIDDEN_CHARS.search(path):
         return False
-    return not any(
-        segment in ('.', '..') or segment.startswith('.')
-        for segment in path.split('/') if segment
-    )
+    segments = path.split('/')[1:]
+    for segment in segments:
+        if not segment:
+            continue
+        if (segment in ('.', '..') or segment.startswith('.')
+                or segment.endswith(('.', ' '))
+                or _WINDOWS_DEVICE_NAME.fullmatch(segment)):
+            return False
+    leaf = segments[-1]
+    if leaf and os.path.splitext(leaf)[1].lower() not in STATIC_EXTENSIONS:
+        return False
+    return True
+
+
+def static_target_allowed(directory: str, target: str, exact_files=()) -> bool:
+    """Confirm the resolved file (after symlinks/junctions) is still servable.
+
+    ``target`` is what http.server resolved the URL to.  It must live under
+    ``<directory>/dashboard`` or ``<directory>/assets`` (or be one of
+    ``exact_files``) and, unless it is a directory, carry an allowed extension.
+    """
+    try:
+        real = os.path.normcase(os.path.realpath(target))
+        base = os.path.realpath(directory)
+        exact = {os.path.normcase(os.path.realpath(name)) for name in exact_files}
+        if real in exact:
+            return True
+        for name in ("dashboard", "assets"):
+            root = os.path.normcase(os.path.join(base, name))
+            if os.path.commonpath([real, root]) == root:
+                return (os.path.isdir(real)
+                        or os.path.splitext(real)[1].lower() in STATIC_EXTENSIONS)
+    except (OSError, ValueError):
+        pass
+    return False
 
 
 def public_config(config: Mapping) -> dict:

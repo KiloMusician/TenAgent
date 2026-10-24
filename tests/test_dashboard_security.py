@@ -93,6 +93,23 @@ class DashboardSecurityTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(valid_static_path(path))
 
+    def test_static_paths_reject_names_windows_would_reinterpret(self):
+        for path in (
+            "/dashboard/serve.py", "/dashboard/serve.py.", "/dashboard/serve.py ",
+            "/dashboard/serve.py::$DATA", "/dashboard/index.html:stream",
+            "/dashboard/nul", "/dashboard/NUL.txt", "/dashboard/com1.png",
+            "/dashboard/CLOCK$", "/assets/data.db", "/assets/NOEXT",
+            "/dashboard/c:/windows/win.ini", "/dashboard", "relative/path.png",
+            "/dashboard/caf\u00e9.png",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(valid_static_path(path))
+        for path in ("/dashboard/", "/dashboard/index.html", "/assets/logo.png",
+                     "/specs/swarm-status.json", "/specs/terminal.log",
+                     "/dashboard/favicon.PNG", "/assets//logo.png"):
+            with self.subTest(path=path):
+                self.assertTrue(valid_static_path(path))
+
     def test_dashboard_cli_never_skips_permissions(self):
         server_source = (Path(__file__).resolve().parents[1] / "dashboard" / "serve.py").read_text(
             encoding="utf-8"

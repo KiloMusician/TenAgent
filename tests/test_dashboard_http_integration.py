@@ -6,7 +6,9 @@ sockets.  See ``http_harness.py`` for the isolation guarantees.
 """
 
 import json
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -524,6 +526,85 @@ class StaticPathTests(DashboardCase):
         redirect = self.get("/dashboard")
         self.assertEqual(redirect.status, 301)
         self.assertEqual(redirect.header("location"), "/dashboard/")
+
+
+class StaticGuardBypassTests(DashboardCase):
+    """The deny-list in do_GET used to look at a different string than the
+    file system: http.server drops '#...', Windows drops trailing dots and
+    resolves 'name::$DATA' to the file's default stream."""
+
+    def assert_not_served(self, target, *, content_markers=()):
+        response = self.raw_request("GET", target, timeout=5)
+        self.assertIn(response.status, (400, 403, 404), (target, response))
+        for marker in tuple(CANARIES) + tuple(content_markers):
+            self.assertNotIn(marker.encode(), response.body, target)
+
+    def test_denied_extensions_cannot_be_hidden_behind_a_fragment(self):
+        for target in ("/dashboard/serve.py#x", "/dashboard/security.py#.txt",
+                       "/dashboard/serve.py#.png", "/dashboard/SERVE.PY#.html"):
+            with self.subTest(target=target):
+                self.assert_not_served(target)
+
+    def test_windows_name_normalisation_cannot_reach_denied_files(self):
+        for target in ("/dashboard/serve.py.", "/dashboard/serve.py..",
+                       "/dashboard/serve.py::$DATA", "/dashboard/serve.py:stream",
+                       "/dashboard/security.py::$DATA", "/dashboard/serve.py.png:x.png"):
+            with self.subTest(target=target):
+                self.assert_not_served(target)
+
+    def test_only_the_two_state_files_are_served_from_specs(self):
+        (self.root / "specs" / "swarm-status.json.tmp").write_text(CANARY_SPEC, "utf-8")
+        (self.root / "specs" / "swarm-status.jsonx").write_text(CANARY_SPEC, "utf-8")
+        for target in ("/specs/swarm-status.json.tmp", "/specs/swarm-status.jsonx",
+                       "/specs/swarm-status.json.", "/specs/swarm-status.json::$DATA",
+                       "/specs/swarm-status.json/", "/specs/"):
+            with self.subTest(target=target):
+                self.assert_not_served(target)
+        self.assertEqual(self.get("/specs/swarm-status.json").status, 200)
+
+    def test_extension_allow_list_applies_inside_served_directories(self):
+        (self.root / "dashboard" / "notes.bak").write_text(CANARY_SPEC, "utf-8")
+        (self.root / "assets" / "data.db").write_text(CANARY_SPEC, "utf-8")
+        (self.root / "assets" / "NOEXT").write_text(CANARY_SPEC, "utf-8")
+        for target in ("/dashboard/notes.bak", "/assets/data.db", "/assets/NOEXT"):
+            with self.subTest(target=target):
+                self.assert_not_served(target)
+
+    def test_windows_device_names_are_not_opened(self):
+        for name in ("nul", "NUL", "nul.txt", "con", "aux.png", "prn.html", "com1",
+                     "COM9.svg", "lpt1.png", "conin$", "CLOCK$"):
+            with self.subTest(name=name):
+                response = self.raw_request("GET", f"/dashboard/{name}", timeout=5)
+                self.assertIn(response.status, (400, 403, 404), name)
+
+    def test_directory_listings_are_not_generated(self):
+        for target in ("/assets/", "/dashboard/sub/", "/specs/"):
+            with self.subTest(target=target):
+                response = self.raw_request("GET", target)
+                self.assertIn(response.status, (403, 404))
+                self.assertNotIn(b"Directory listing", response.body)
+
+    def test_junction_inside_a_served_directory_cannot_escape_the_tree(self):
+        import subprocess
+        outside = Path(tempfile.mkdtemp(prefix="tenagent-outside-"))
+        self.addCleanup(shutil.rmtree, outside, True)
+        (outside / "leak.txt").write_text(CANARY_ROOT, "utf-8")
+        link = self.root / "assets" / "link"
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                              capture_output=True, text=True)
+        if made.returncode != 0:
+            self.skipTest("cannot create a directory junction: " + made.stdout + made.stderr)
+        try:
+            self.assert_not_served("/assets/link/leak.txt")
+        finally:
+            subprocess.run(["cmd", "/c", "rmdir", str(link)], capture_output=True)
+
+    def test_legitimate_assets_are_still_served(self):
+        for target in ("/dashboard/", "/dashboard/index.html", "/dashboard/favicon.png?v=2",
+                       "/dashboard/logoTenAgent.png", "/assets/logo.png", "/favicon.ico",
+                       "/specs/swarm-status.json"):
+            with self.subTest(target=target):
+                self.assertEqual(self.get(target).status, 200)
 
 
 class BindingTests(DashboardCase):

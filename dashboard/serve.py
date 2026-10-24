@@ -25,6 +25,7 @@ if DIRECTORY not in sys.path:
 from dashboard.security import (
     parse_log_update,
     public_config,
+    static_target_allowed,
     valid_local_host,
     valid_mutation_origin,
     valid_operator_authorization,
@@ -1171,6 +1172,9 @@ def start_workspace_watcher(root_dir: str):
     t = threading.Thread(target=watcher_loop, daemon=True)
     t.start()
 
+STATIC_STATE_FILES = ('/specs/swarm-status.json', '/specs/terminal.log')
+STATIC_PREFIXES = ('/dashboard/', '/assets/', '/favicon.')
+
 class SwarmHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=DIRECTORY, **kwargs)
@@ -1178,6 +1182,11 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         # Silence routine HTTP polling logs to keep the console clean
         pass
+
+    def list_directory(self, path):
+        # Never enumerate directories; only named files are served.
+        self.send_error(404, "Not Found")
+        return None
 
     def end_headers(self):
         # This loopback dashboard intentionally does not expose CORS permissions.
@@ -1241,7 +1250,9 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if not self._require_dashboard_access():
             return
-        clean_path = self.path.split('?')[0]
+        # http.server drops '?query' and '#fragment' before touching the disk,
+        # so every check below must look at the same part of the target.
+        clean_path = self.path.split('?')[0].split('#')[0]
 
         # Redirect root to /dashboard/
         if clean_path == '/' or clean_path == '':
@@ -1351,6 +1362,13 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json_response(public_config(cfg))
             return
 
+        if clean_path == '/dashboard':
+            self.send_response(301)
+            self.send_header('Location', '/dashboard/')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+
         # Validate raw static URLs before SimpleHTTPRequestHandler decodes them.
         if not valid_static_path(clean_path):
             self.send_error(403, "Access Forbidden: Encoded or hidden path")
@@ -1361,9 +1379,14 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error(403, "Access Forbidden: Protected system resource")
             return
 
-        allowed_prefixes = ('/dashboard/', '/assets/', '/specs/swarm-status.json', '/specs/terminal.log', '/favicon.')
-        if not any(clean_path.startswith(p) for p in allowed_prefixes) and clean_path not in ('/dashboard', '/'):
+        if clean_path not in STATIC_STATE_FILES and not clean_path.startswith(STATIC_PREFIXES):
             self.send_error(404, "Not Found")
+            return
+
+        # Judge the file http.server will really open (symlinks, junctions).
+        if not static_target_allowed(
+                DIRECTORY, self.translate_path(clean_path), (STATUS_FILE, LOG_FILE)):
+            self.send_error(403, "Access Forbidden: Protected system resource")
             return
 
         try:
