@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import support  # noqa: F401  (puts the repo root on sys.path for python -I)
 import swarm_pipeline
 
 
