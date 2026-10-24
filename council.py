@@ -20,6 +20,9 @@ except Exception:
     pass
 
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+from dashboard.statefile import update_json_file  # one lock and atomic replace for every writer
 SPECS_DIR = os.path.join(ROOT_DIR, "specs")
 CONFIG_FILE = os.path.join(SPECS_DIR, "swarm-config.json")
 STATUS_FILE = os.path.join(SPECS_DIR, "swarm-status.json")
@@ -138,15 +141,10 @@ def log_council_message(tag: str, message: str, root_dir: str = None):
         pass
 
 def update_provider_runtime_status(provider_id: str, status: str, status_detail: str, valid: bool = None, root_dir: str = None):
-    try:
-        base = root_dir or ROOT_DIR
-        cfg_path = os.path.join(base, "specs", "swarm-config.json")
-        if not os.path.exists(cfg_path):
-            return
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-        changed = False
-        p_target = provider_id.lower().strip()
+    cfg_path = os.path.join(root_dir or ROOT_DIR, "specs", "swarm-config.json")
+    p_target = provider_id.lower().strip()
+
+    def apply(cfg):
         for p in cfg.get("providers", []):
             cur_p = (p.get("provider") or "").lower().strip()
             if cur_p == p_target or (cur_p in p_target) or (p_target in cur_p):
@@ -155,13 +153,12 @@ def update_provider_runtime_status(provider_id: str, status: str, status_detail:
                     p["statusDetail"] = status_detail
                     if valid is not None:
                         p["valid"] = valid
-                    changed = True
-                break
-        if changed:
-            tmp = cfg_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2)
-            os.replace(tmp, cfg_path)
+                    return True
+                return False
+        return False
+
+    try:
+        update_json_file(cfg_path, apply)
     except Exception:
         pass
 

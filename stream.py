@@ -33,6 +33,9 @@ import subprocess
 import argparse
 
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+from dashboard.statefile import atomic_write_json  # readers never see a half-written file
 SPECS_DIR = os.path.join(ROOT_DIR, "specs")
 LOG_FILE = os.path.join(SPECS_DIR, "terminal.log")
 STATUS_FILE = os.path.join(SPECS_DIR, "swarm-status.json")
@@ -130,8 +133,7 @@ def update_agent_status(agent_id: str, process_detail: str, status: str = None, 
             # Keep swarm logs to last 50 entries
             data["logs"] = data["logs"][-50:]
 
-            with open(STATUS_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+            atomic_write_json(STATUS_FILE, data)
     except Exception:
         pass
 

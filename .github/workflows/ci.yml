@@ -21,7 +21,7 @@ jobs:
 
       - name: Verify TenAgent Scripts & Engines
         run: |
-          python -m py_compile council.py stream.py swarm_pipeline.py dashboard/serve.py setup_project.py
+          python -m py_compile council.py stream.py swarm_pipeline.py dashboard/serve.py dashboard/statefile.py setup_project.py
 
       - name: Validate Swarm State & Specification Integrity
         run: |
