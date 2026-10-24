@@ -9,6 +9,7 @@ from dashboard.security import (
     valid_local_host,
     valid_mutation_origin,
     valid_operator_authorization,
+    valid_static_path,
 )
 
 
@@ -71,6 +72,19 @@ class DashboardSecurityTests(unittest.TestCase):
         self.assertTrue(result["providers"][0]["has_key"])
         self.assertEqual(result["providers"][0]["key_masked"], "***")
         self.assertFalse(result["providers"][1]["has_key"])
+
+    def test_static_paths_reject_encoded_traversal(self):
+        self.assertTrue(valid_static_path("/dashboard/index.html"))
+        self.assertTrue(valid_static_path("/assets/example.png"))
+        for path in (
+            "/dashboard/%2e%2e/specs/config.json",
+            "/dashboard/%252e%252e/secrets",
+            "/dashboard/../secret",
+            "/dashboard/.env",
+            "/dashboard/\\\\secret",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(valid_static_path(path))
 
     def test_dashboard_cli_never_skips_permissions(self):
         server_source = (Path(__file__).resolve().parents[1] / "dashboard" / "serve.py").read_text(
