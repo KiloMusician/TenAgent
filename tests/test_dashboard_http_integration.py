@@ -1241,6 +1241,55 @@ class ChildProcessTests(DashboardCase):
         self.assertFalse(captured["kwargs"].get("shell"))
 
 
+class ProviderUrlTests(DashboardCase):
+    """A provider base URL is operator data; it must only ever be fetched over http(s)."""
+
+    BAD_URLS = ("file:///C:/Windows/win.ini", "file://localhost/C$/secret/models",
+                "ftp://127.0.0.1/pub/models", "gopher://127.0.0.1:70/", "data:text/plain,hi",
+                "jar:file:///x!/", "localhost:20128/v1", "//evil.example/v1", "C:\\models")
+
+    def install_recorder(self):
+        import urllib.error
+        import urllib.request
+        calls = []
+
+        def recorder(request, *args, **kwargs):
+            calls.append(getattr(request, "full_url", request))
+            raise urllib.error.URLError("recorded")
+
+        urllib.request.urlopen = recorder  # restored by the harness cleanup
+        return calls
+
+    def test_verification_never_fetches_non_http_urls(self):
+        calls = self.install_recorder()
+        verify = self._saved["verify_ai_provider_key"]
+        for url in self.BAD_URLS:
+            with self.subTest(url=url):
+                result = verify("custom", "sk-test-FAKE-123", base_url=url)
+                self.assertFalse(result["valid"])
+                self.assertEqual(result["models"], [])
+        self.assertEqual(calls, [])
+
+    def test_http_urls_are_still_fetched(self):
+        calls = self.install_recorder()
+        verify = self._saved["verify_ai_provider_key"]
+        for url, expected in (("http://127.0.0.1:20128/v1", "http://127.0.0.1:20128/v1/models"),
+                              ("https://gateway.example/v1", "https://gateway.example/v1/models")):
+            verify("custom", "sk-test-FAKE-123", base_url=url)
+            self.assertEqual(calls[-1], expected)
+
+    def test_chat_requests_never_use_non_http_urls(self):
+        import threading
+        calls = self.install_recorder()
+        providers = [{"provider": "custom", "key": "sk-test-FAKE-123", "baseUrl": url}
+                     for url in self.BAD_URLS]
+        before = set(threading.enumerate())
+        self.serve.call_custom_ai_provider("hello", providers, str(self.root))
+        for thread in set(threading.enumerate()) - before:
+            thread.join(10)
+        self.assertEqual(calls, [])
+
+
 class BindingTests(DashboardCase):
     def test_server_listens_on_loopback_only(self):
         self.assertEqual(self.httpd.server_address[0], "127.0.0.1")

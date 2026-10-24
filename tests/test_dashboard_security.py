@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dashboard.security import (
+    is_http_url,
     is_secret_field,
     mask_key,
     parse_log_update,
@@ -179,6 +180,17 @@ class RedactionTests(unittest.TestCase):
         self.assertIn("keep=me", out)
         self.assertEqual(redact_text("nothing to hide here"), "nothing to hide here")
         self.assertEqual(redact_text("abc secret=xyz", secrets=("", "abc")), "abc secret=***")
+
+
+class ProviderUrlTests(unittest.TestCase):
+    def test_only_absolute_http_urls_with_a_host(self):
+        for url in ("http://127.0.0.1:20128/v1", "https://api.example.com", " HTTP://Host/x "):
+            with self.subTest(url=url):
+                self.assertTrue(is_http_url(url))
+        for url in ("file:///C:/x", "ftp://h/x", "data:text/plain,hi", "localhost:20128/v1",
+                    "//h/v1", "http://", "http:///x", "", None, 5):
+            with self.subTest(url=url):
+                self.assertFalse(is_http_url(url))
 
 
 class PrepareConfigPayloadTests(unittest.TestCase):

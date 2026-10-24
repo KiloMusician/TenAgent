@@ -384,3 +384,14 @@ def tokens_match(submitted: str, expected: str) -> bool:
     return bool(submitted) and hmac.compare_digest(
         submitted.encode("utf-8"), expected.encode("utf-8")
     )
+
+
+def is_http_url(value) -> bool:
+    """True only for absolute http(s) URLs with a host (no file:, ftp:, data: ...)."""
+    if not isinstance(value, str):
+        return False
+    try:
+        parts = urlsplit(value.strip())
+        return parts.scheme.lower() in ("http", "https") and bool(parts.hostname)
+    except ValueError:
+        return False

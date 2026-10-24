@@ -23,6 +23,7 @@ if DIRECTORY not in sys.path:
     sys.path.insert(0, DIRECTORY)
 
 from dashboard.security import (
+    is_http_url,
     is_masked_key,
     parse_log_update,
     prepare_config_payload,
@@ -192,6 +193,10 @@ def verify_ai_provider_key(provider_id: str, key: str, base_url: str = "") -> di
     b_url = (base_url or "").strip()
     if not k:
         return {"status": "empty", "valid": False, "statusDetail": "Empty Key", "models": []}
+    if b_url and not is_http_url(b_url):
+        # urllib would happily open file:// and ftp:// URLs.
+        return {"status": "connection_error", "valid": False,
+                "statusDetail": "Base URL must be http(s)", "models": []}
     
     headers = {"User-Agent": "TenAgent/1.0"}
     models = []
@@ -733,6 +738,10 @@ def call_custom_ai_provider(prompt: str, providers: list, root_dir: str):
             key = p_entry.get("key") or ""
             name = p_entry.get("name") or p_id.upper()
             if not key:
+                continue
+            base_url = (p_entry.get("base_url") or p_entry.get("baseUrl") or "").strip()
+            if base_url and not is_http_url(base_url):
+                append_to_terminal_log("system", f"{name}: base URL must be http(s); skipping.")
                 continue
 
             append_to_terminal_log("system", f"Connecting prompt to {name}...")
