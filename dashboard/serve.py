@@ -1341,9 +1341,14 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json_response(public_config(cfg))
             return
 
-        # Whitelist and Path Sanitization (Zero .env, zero config, zero path traversal leak)
-        if '..' in clean_path or '/.' in clean_path or clean_path.startswith('/.'):
-            self.send_error(403, "Access Forbidden: Path traversal or hidden files blocked")
+        # The static server decodes percent escapes after this check.
+        # Reject ambiguous static URLs rather than validate one path and serve another.
+        if (
+            '%' in clean_path or '\\' in clean_path
+            or any(segment in ('.', '..') or segment.startswith('.')
+                   for segment in clean_path.split('/') if segment)
+        ):
+            self.send_error(403, "Access Forbidden: Encoded or hidden path")
             return
 
         lower_path = clean_path.lower()
