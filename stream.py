@@ -31,8 +31,35 @@ import time
 import datetime
 import subprocess
 import argparse
+import tempfile
 
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+try:
+    from swarm_pipeline import atomic_write_text as _atomic_write_text
+except Exception:  # keep the logger usable even if the pipeline module cannot be imported
+    def _atomic_write_text(path, text):
+        """Minimal fallback: unique temp file, replace, brief retry while a reader holds the target."""
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), prefix=os.path.basename(path) + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+            for attempt in range(6):
+                try:
+                    os.replace(tmp, path)
+                    return
+                except PermissionError:
+                    if attempt == 5:
+                        raise
+                    time.sleep(0.02 * (attempt + 1))
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 SPECS_DIR = os.path.join(ROOT_DIR, "specs")
 LOG_FILE = os.path.join(SPECS_DIR, "terminal.log")
 STATUS_FILE = os.path.join(SPECS_DIR, "swarm-status.json")
@@ -130,10 +157,11 @@ def update_agent_status(agent_id: str, process_detail: str, status: str = None, 
             # Keep swarm logs to last 50 entries
             data["logs"] = data["logs"][-50:]
 
-            with open(STATUS_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-    except Exception:
-        pass
+            # Atomic write (unique temp file + replace, retried while a reader holds the target).
+            _atomic_write_text(STATUS_FILE, json.dumps(data, indent=2))
+    except Exception as exc:
+        print(f"[stream] WARNING: could not update swarm-status.json ({type(exc).__name__}); "
+              "on-disk state is unchanged.", file=sys.stderr)
 
 def detect_agent_from_text(text: str, fallback_agent: str = None) -> str:
     if fallback_agent and fallback_agent in VALID_AGENTS:
@@ -304,10 +332,12 @@ def main():
         goal = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else "Full-Stack System MVP"
         try:
             import swarm_pipeline
-            swarm_pipeline.execute_multi_brain_swarm(goal, ROOT_DIR)
+            generated = swarm_pipeline.execute_multi_brain_swarm(goal, ROOT_DIR)
         except Exception as e:
             print(f"[swarm_error] Swarm execution failed: {e}")
-        return
+            sys.exit(1)
+        # Exit 0 only when a draft was generated; failure or a blocked start must not look like success.
+        sys.exit(0 if generated else 1)
 
     # Subcommand: shell
     if subcmd == "shell":
