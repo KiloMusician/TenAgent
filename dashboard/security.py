@@ -3,6 +3,7 @@
 import base64
 import binascii
 import hmac
+import http.cookies
 import os
 import re
 from collections.abc import Mapping
@@ -365,3 +366,21 @@ def redact_text(text: str, secrets=()) -> str:
     text = _BEARER.sub(lambda m: m.group(1) + "***", text)
     text = _SECRET_ASSIGNMENT.sub(lambda m: m.group(1) + "***", text)
     return _SHAPES.sub("***", text)
+
+
+def session_cookie_token(header: str | None, name: str = "tenagent_token") -> str:
+    """Value of exactly the cookie called ``name`` ("" if absent or unparsable)."""
+    jar = http.cookies.SimpleCookie()
+    try:
+        jar.load(header or "")
+    except http.cookies.CookieError:
+        return ""
+    morsel = jar.get(name)
+    return morsel.value if morsel else ""
+
+
+def tokens_match(submitted: str, expected: str) -> bool:
+    """Constant-time comparison of two session tokens."""
+    return bool(submitted) and hmac.compare_digest(
+        submitted.encode("utf-8"), expected.encode("utf-8")
+    )

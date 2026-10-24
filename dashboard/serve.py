@@ -28,8 +28,10 @@ from dashboard.security import (
     prepare_config_payload,
     public_config,
     redact_text,
+    session_cookie_token,
     single_line,
     static_target_allowed,
+    tokens_match,
     valid_local_host,
     valid_mutation_origin,
     valid_operator_authorization,
@@ -1580,12 +1582,8 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             # Security Check 3: CSRF Session Token verification
             req_token = self.headers.get('X-TenAgent-Token', '').strip()
             if not req_token:
-                cookie_hdr = self.headers.get('Cookie', '')
-                for cookie_part in cookie_hdr.split(';'):
-                    if 'tenagent_token=' in cookie_part:
-                        req_token = cookie_part.split('tenagent_token=')[1].strip()
-                        break
-            if not req_token or req_token != _SESSION_TOKEN:
+                req_token = session_cookie_token(self.headers.get('Cookie', ''))
+            if not tokens_match(req_token, _SESSION_TOKEN):
                 self.send_json_response({"error": "Forbidden: Invalid or missing CSRF session token"}, 403)
                 return
 

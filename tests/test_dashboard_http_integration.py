@@ -1099,6 +1099,58 @@ class TerminalLogHygieneTests(DashboardCase):
         self.assertIn("[founder] > echo real", lines[0])
 
 
+class SessionTokenTests(DashboardCase):
+    """/api/command needs the per-run token in addition to the Basic credentials."""
+
+    def command(self, headers):
+        base = [("Content-Type", "application/json"),
+                ("Origin", f"http://{self.local_host}"), ("Sec-Fetch-Site", "same-origin")]
+        return self.raw_request("POST", "/api/command", headers=base + list(headers),
+                                body=b'{"command":"echo token-test"}')
+
+    def test_cookie_is_matched_by_exact_name(self):
+        token = FAKE_SESSION_TOKEN
+        for label, cookie in {
+            "suffix-name": f"xtenagent_token={token}",
+            "prefix-name": f"tenagent_token_x={token}",
+            "inside-value": f"other=tenagent_token={token}",
+            "empty-value": "tenagent_token=",
+            "partial-token": f"tenagent_token={token[:-1]}",
+            "longer-token": f"tenagent_token={token}x",
+        }.items():
+            with self.subTest(case=label):
+                self.assertEqual(self.command([("Cookie", cookie)]).status, 403)
+        self.assertEqual(self.shell_runs, [])
+
+    def test_cookie_among_others_is_accepted(self):
+        for cookie in (f"a=b; tenagent_token={FAKE_SESSION_TOKEN}; c=d",
+                       f"tenagent_token={FAKE_SESSION_TOKEN}",
+                       f'tenagent_token="{FAKE_SESSION_TOKEN}"'):
+            with self.subTest(cookie=cookie[:30]):
+                self.assertEqual(self.command([("Cookie", cookie)]).status, 200)
+
+    def test_header_wins_over_cookie_and_is_exact(self):
+        good = f"tenagent_token={FAKE_SESSION_TOKEN}"
+        self.assertEqual(self.command([("X-TenAgent-Token", "wrong"), ("Cookie", good)]).status, 403)
+        self.assertEqual(self.command([("X-TenAgent-Token", FAKE_SESSION_TOKEN + "x")]).status, 403)
+        self.assertEqual(self.command([("X-TenAgent-Token", FAKE_SESSION_TOKEN)]).status, 200)
+
+    def test_non_ascii_token_values_are_a_403_not_a_crash(self):
+        response = self.command([("X-TenAgent-Token", "t\xf6ken-\xe9")])
+        self.assertEqual(response.status, 403)
+        response = self.command([("Cookie", "tenagent_token=t\xf6ken")])
+        self.assertEqual(response.status, 403)
+
+    def test_comparison_is_constant_time(self):
+        import hmac
+        from unittest import mock
+        with mock.patch("hmac.compare_digest", wraps=hmac.compare_digest) as compare:
+            self.assertEqual(self.command([("X-TenAgent-Token", "wrong")]).status, 403)
+            self.assertEqual(self.command([("X-TenAgent-Token", FAKE_SESSION_TOKEN)]).status, 200)
+        compare.assert_any_call(b"wrong", FAKE_SESSION_TOKEN.encode())
+        compare.assert_any_call(FAKE_SESSION_TOKEN.encode(), FAKE_SESSION_TOKEN.encode())
+
+
 class BindingTests(DashboardCase):
     def test_server_listens_on_loopback_only(self):
         self.assertEqual(self.httpd.server_address[0], "127.0.0.1")
