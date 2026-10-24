@@ -1335,20 +1335,13 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                             for p in cfg["providers"]:
                                 if probe_and_update_local_provider(p):
                                     probe_changed = True
-                                k = p.get("key", "")
-                                p["has_key"] = bool(k and k.strip())
-                                if k:
-                                    p["key_masked"] = k[:4] + "..." + k[-4:] if len(k) > 8 else "***"
-                                else:
-                                    p["key_masked"] = ""
-                                # CRITICAL SECURITY: Never return plaintext key in HTTP response!
-                                p.pop("key", None)
                             if probe_changed:
+                                # Persist original credentials, not their redacted HTTP view.
                                 safe_write_json(cfg_file, cfg)
                 except Exception:
                     pass
             cfg["cli"] = get_cached_cli_status(DIRECTORY)
-            self.send_json_response(cfg)
+            self.send_json_response(public_config(cfg))
             return
 
         # Whitelist and Path Sanitization (Zero .env, zero config, zero path traversal leak)
@@ -1430,14 +1423,7 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 with open(cfg_file, "w", encoding="utf-8") as f:
                     json.dump(payload, f, indent=2)
 
-                # CRITICAL SECURITY: Never return raw plaintext keys to client!
-                safe_payload = json.loads(json.dumps(payload))
-                for sp in safe_payload.get("providers", []):
-                    raw_k = sp.pop("key", None)
-                    sp["has_key"] = bool(raw_k and str(raw_k).strip())
-                    sp["key_masked"] = raw_k[:4] + "..." + raw_k[-4:] if raw_k and len(raw_k) > 8 else ("***" if raw_k else "")
-
-                self.send_json_response({"ok": True, "config": safe_payload})
+                self.send_json_response({"ok": True, "config": public_config(payload)})
                 return
             except Exception as e:
                 self.send_json_response({"error": str(e)}, 400)
