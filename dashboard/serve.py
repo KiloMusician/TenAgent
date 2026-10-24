@@ -659,8 +659,34 @@ def probe_and_update_local_provider(p: dict) -> bool:
             changed = True
     return changed
 
+def probe_rate_limited_provider(p: dict) -> bool:
+    """Real HTTP probe to check if a rate-limited cloud provider quota has recovered (zero gimmick)."""
+    if p.get("status") != "rate_limited":
+        return False
+    p_id = (p.get("provider") or "").lower().strip()
+    k = (p.get("key") or "").strip()
+    b_url = (p.get("baseUrl") or p.get("base_url") or "").strip()
+    if not k:
+        return False
+    try:
+        ver = verify_ai_provider_key(p_id, k, base_url=b_url)
+        if ver.get("status") == "active":
+            p["status"] = "active"
+            p["statusDetail"] = "Active"
+            p["valid"] = True
+            return True
+        elif ver.get("status") == "invalid_key":
+            p["status"] = "invalid_key"
+            p["statusDetail"] = "Invalid Key"
+            p["valid"] = False
+            return True
+    except Exception:
+        pass
+    return False
+
 def local_providers_probe_worker(root_dir: str):
     cfg_file = os.path.join(root_dir, "specs", "swarm-config.json")
+    last_cloud_probe = 0
     while True:
         try:
             time.sleep(2.5)
@@ -671,9 +697,17 @@ def local_providers_probe_worker(root_dir: str):
 
             providers = cfg.get("providers", [])
             changed = False
+            now = time.time()
+            check_cloud_ratelimit = (now - last_cloud_probe >= 15.0)
+
             for p in providers:
                 if probe_and_update_local_provider(p):
                     changed = True
+                if check_cloud_ratelimit and probe_rate_limited_provider(p):
+                    changed = True
+
+            if check_cloud_ratelimit:
+                last_cloud_probe = now
 
             if changed:
                 safe_write_json(cfg_file, cfg)
@@ -821,8 +855,8 @@ def safe_write_json(filepath: str, data: dict):
 def detect_agent_from_file_path(rel_path: str) -> str:
     norm = rel_path.replace("\\", "/").lower()
     
-    # Exclude downstream cascade deliverables and temp/log files to prevent echo loops
-    if any(norm.endswith(x) for x in ("test-matrix.md", "audit-report.md", "signoff.md", ".tmp", ".log")):
+    # Exclude downstream cascade deliverables and temp/log/config files to prevent echo loops
+    if any(norm.endswith(x) for x in ("test-matrix.md", "audit-report.md", "signoff.md", "swarm-config.json", ".tmp", ".log")):
         return None
     
     if "specs/prd" in norm or "prd/" in norm:
@@ -856,7 +890,7 @@ def detect_agent_from_file_path(rel_path: str) -> str:
     if norm.endswith((".py", ".go", ".rs", ".java", ".php")):
         return "05_backend"
         
-    return "05_backend"
+    return None
 
 ROLE_WORK_STAGES = {
     "01_pm": [
@@ -1017,8 +1051,15 @@ def handle_file_event(agent_id: str, action_desc: str, root_dir: str):
             with open(status_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             updated = False
+            cur_phase = str(data.get("project", {}).get("phase", ""))
+            is_pipeline_active = cur_phase.startswith("Phase ") or cur_phase == "Completed: Production Ready"
+
             for a in data.get("agents", []):
                 if a.get("id") == agent_id:
+                    # Do not revert an agent that just completed its deliverable during an automated pipeline run
+                    if is_pipeline_active and a.get("status") == "REVIEWING" and a.get("progress", 0) == 100 and action_desc.startswith("Created "):
+                        break
+
                     a["processDetail"] = action_desc
                     a["status"] = "WORKING"
                     # Invalidate prior completion on file modifications
@@ -1042,6 +1083,23 @@ def handle_file_event(agent_id: str, action_desc: str, root_dir: str):
                 if "project" in data and "agents" in data:
                     total_p = sum(ag.get("progress", 0) for ag in data["agents"])
                     data["project"]["overallProgress"] = int(total_p / len(data["agents"]))
+
+                    # Clear stuck FAILED phase when agent resumes active work
+                    cur_phase = str(data["project"].get("phase", ""))
+                    if "FAILED:" in cur_phase:
+                        role_phase_map = {
+                            "01_pm": "Phase 1: PRD & Requirements",
+                            "02_arch": "Phase 2: Architecture & ADR",
+                            "03_designer": "Phase 3: Design Tokens & UI/UX",
+                            "04_dba": "Phase 4: Database & API Contract",
+                            "05_backend": "Phase 5: Backend Domain Implementation",
+                            "06_client": "Phase 6: Client UI Implementation",
+                            "07_qa": "Phase 7: QA Test Engineering",
+                            "08_security": "Phase 8: Security Vulnerability Audit",
+                            "09_devops": "Phase 9: DevOps & Containerization",
+                            "10_tech_lead": "Phase 10: Final Quality Gate Audit"
+                        }
+                        data["project"]["phase"] = role_phase_map.get(agent_id, "In Progress")
 
                 safe_write_json(status_file, data)
     except Exception:

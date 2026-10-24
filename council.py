@@ -137,6 +137,34 @@ def log_council_message(tag: str, message: str, root_dir: str = None):
     except Exception:
         pass
 
+def update_provider_runtime_status(provider_id: str, status: str, status_detail: str, valid: bool = None, root_dir: str = None):
+    try:
+        base = root_dir or ROOT_DIR
+        cfg_path = os.path.join(base, "specs", "swarm-config.json")
+        if not os.path.exists(cfg_path):
+            return
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        changed = False
+        p_target = provider_id.lower().strip()
+        for p in cfg.get("providers", []):
+            cur_p = (p.get("provider") or "").lower().strip()
+            if cur_p == p_target or (cur_p in p_target) or (p_target in cur_p):
+                if p.get("status") != status:
+                    p["status"] = status
+                    p["statusDetail"] = status_detail
+                    if valid is not None:
+                        p["valid"] = valid
+                    changed = True
+                break
+        if changed:
+            tmp = cfg_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+            os.replace(tmp, cfg_path)
+    except Exception:
+        pass
+
 def call_llm(provider: dict, system_prompt: str, user_prompt: str, timeout: int = 75) -> str:
     """Dispatches prompt to any supported LLM provider using pure Python standard library."""
     p_id = provider["id"]
@@ -156,7 +184,7 @@ def call_llm(provider: dict, system_prompt: str, user_prompt: str, timeout: int 
                 "parts": [{"text": f"{system_prompt}\n\nTask:\n{user_prompt}"}]
             }],
             "generationConfig": {
-                "maxOutputTokens": 600,
+                "maxOutputTokens": 2048,
                 "temperature": 0.7
             }
         }
@@ -175,6 +203,8 @@ def call_llm(provider: dict, system_prompt: str, user_prompt: str, timeout: int 
             except urllib.error.HTTPError as e:
                 if e.code == 404:
                     continue
+                if e.code == 429:
+                    update_provider_runtime_status(p_id, "rate_limited", "Rate Limited", False)
                 raise
         return ""
 
@@ -190,15 +220,20 @@ def call_llm(provider: dict, system_prompt: str, user_prompt: str, timeout: int 
         chosen_claude_model = provider.get("model") or "claude-3-5-sonnet-20241022"
         payload = {
             "model": chosen_claude_model,
-            "max_tokens": 600,
+            "max_tokens": 2048,
             "system": system_prompt,
             "messages": [{"role": "user", "content": user_prompt}]
         }
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            parts = data.get("content", [])
-            return "".join(p.get("text", "") for p in parts if p.get("type") == "text").strip()
+        try:
+            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                parts = data.get("content", [])
+                return "".join(p.get("text", "") for p in parts if p.get("type") == "text").strip()
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                update_provider_runtime_status(p_id, "rate_limited", "Rate Limited", False)
+            raise
 
     # 3. OpenAI-Compatible Providers (Groq, DeepSeek, OpenAI, Ollama, OpenRouter)
     else:
@@ -207,7 +242,7 @@ def call_llm(provider: dict, system_prompt: str, user_prompt: str, timeout: int 
 
         if "groq" in p_id:
             endpoint = "https://api.groq.com/openai/v1/chat/completions"
-            models = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile"]
+            models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"]
         elif "9router" in p_id or provider.get("baseUrl"):
             target = provider.get("baseUrl") or "http://localhost:20128/v1"
             target = target.rstrip("/")
@@ -245,7 +280,7 @@ def call_llm(provider: dict, system_prompt: str, user_prompt: str, timeout: int 
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
-                    "max_tokens": 1200,
+                    "max_tokens": 2048,
                     "temperature": 0.7,
                     "stream": False
                 }
@@ -279,7 +314,9 @@ def call_llm(provider: dict, system_prompt: str, user_prompt: str, timeout: int 
                     except Exception:
                         pass
             except urllib.error.HTTPError as e:
-                if e.code == 404:
+                if e.code == 429:
+                    update_provider_runtime_status(p_id, "rate_limited", "Rate Limited", False)
+                if e.code in (400, 404):
                     continue
                 raise
         return ""
