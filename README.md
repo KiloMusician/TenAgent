@@ -38,6 +38,22 @@ for review. The pipeline does not overwrite the framework's own CI workflow
 or root Dockerfile. The project stays at **Generated: Awaiting Verification**
 until separately executed QA, security and build checks produce real evidence.
 
+Every run writes `specs/swarm-run.json`, the authoritative record of what
+happened: a run state (`RUNNING`, `AWAITING_VERIFICATION`, `FAILED`,
+or `BLOCKED`; nothing in the pipeline can set `VERIFIED`), and per
+stage the input hash, the sha256 of every file written, the outcome of each
+model call (no secrets) and each validator result. Its `verification` block
+reads `NOT_RUN` until a separate runner supplies evidence. Generated output is
+checked structurally (tests must contain a non-vacuous unittest assertion;
+the OpenAPI check is a structural scan, not a full YAML parse; Markdown
+documents are checked for structure only - a heading, a minimum amount of text,
+balanced code fences, not opening like a refusal - which does not show that the
+content is correct or relevant), the pipeline
+refuses to overwrite files it did not write, and `python swarm_pipeline.py`
+and `python stream.py swarm` exit non-zero unless a draft was generated. Only
+one run per project can be active (`specs/.swarm-run.lock`, stale after two
+hours).
+
 ---
 
 ## The Problem TenAgent Solves
