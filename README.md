@@ -21,6 +21,25 @@
 
 ---
 
+## Generation versus production verification
+
+The swarm produces **draft artifacts** and a **model-generated advisory
+review**. A completed stage or a positive LLM opinion is not proof of a
+successful build, passing automated tests, or a security audit.
+
+When any required model response is missing, the pipeline fails instead of
+substituting apparently successful boilerplate. Generated QA tests are only
+syntax-checked, **never executed by the model generation pipeline**. Run
+untrusted generated code only inside an isolated, resource-limited testing
+environment after reviewing the code and dependencies.
+
+Generated `Dockerfile` and CI templates are saved beneath `specs/devops/`
+for review. The pipeline does not overwrite the framework's own CI workflow
+or root Dockerfile. The project stays at **Generated: Awaiting Verification**
+until separately executed QA, security and build checks produce real evidence.
+
+---
+
 ## The Problem TenAgent Solves
 
 When a single AI coding agent is asked to architect schemas, write frontend components, build backend endpoints, create unit tests, and configure Docker containers in a single conversation context, its **context window degrades rapidly**.
