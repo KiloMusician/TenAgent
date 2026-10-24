@@ -9,6 +9,7 @@ Enforces contract-first specifications, zero fake progress, honest failure repor
 import os
 import sys
 import json
+import subprocess
 import time
 import datetime
 import threading
