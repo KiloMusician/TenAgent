@@ -27,6 +27,7 @@ from dashboard.security import (
     valid_local_host,
     valid_mutation_origin,
     valid_operator_authorization,
+    valid_static_path,
 )
 
 import json
@@ -1341,13 +1342,8 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json_response(public_config(cfg))
             return
 
-        # The static server decodes percent escapes after this check.
-        # Reject ambiguous static URLs rather than validate one path and serve another.
-        if (
-            '%' in clean_path or '\\' in clean_path
-            or any(segment in ('.', '..') or segment.startswith('.')
-                   for segment in clean_path.split('/') if segment)
-        ):
+        # Validate raw static URLs before SimpleHTTPRequestHandler decodes them.
+        if not valid_static_path(clean_path):
             self.send_error(403, "Access Forbidden: Encoded or hidden path")
             return
 
