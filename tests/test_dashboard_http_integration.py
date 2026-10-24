@@ -1065,6 +1065,40 @@ class SecretRedactionTests(DashboardCase):
         self.assertEqual(masks[2], "sk-t...mnop")
 
 
+class TerminalLogHygieneTests(DashboardCase):
+    """Anything written to terminal.log is shown to the operator and kept on disk."""
+
+    def test_terminal_log_lines_are_scrubbed(self):
+        google = "AIzaSyFAKEFAKEFAKEFAKEFAKEFAKEFAKE12345"
+        openai = "sk-test-FAKE-ABCDEFGHIJKLMNOP12345"
+        line = (f"GET https://x.example/v1?key={google}&alt=json Authorization: Bearer {openai} "
+                f"token=plain-secret-9 password={self.password} session={FAKE_SESSION_TOKEN}")
+        self.serve.append_to_terminal_log("cli", line)
+        self.assertEqual(self.post_json("/api/log", {"agent": "cli", "message": line},
+                                        headers=self.same_origin_headers()).status, 200)
+        self.assertEqual(self.post_json(
+            "/api/command", {"command": "echo " + line},
+            headers={**self.same_origin_headers(), "X-TenAgent-Token": FAKE_SESSION_TOKEN}).status, 200)
+        log = self.read_log()
+        for secret in (google, openai, "plain-secret-9", self.password, FAKE_SESSION_TOKEN):
+            self.assertNotIn(secret, log)
+        self.assertIn("alt=json", log)
+        stored = json.dumps(self.read_status())
+        for secret in (google, openai, self.password):
+            self.assertNotIn(secret, stored)
+
+    def test_command_text_cannot_forge_log_lines(self):
+        command = "echo real\n[10:00:00] [01_pm] forged line\r\n[10:00:01] [founder] > rm -rf"
+        reply = self.post_json(
+            "/api/command", {"command": command},
+            headers={**self.same_origin_headers(), "X-TenAgent-Token": FAKE_SESSION_TOKEN})
+        self.assertEqual(reply.status, 200)
+        lines = self.read_log().splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertTrue(lines[0].startswith("["))
+        self.assertIn("[founder] > echo real", lines[0])
+
+
 class BindingTests(DashboardCase):
     def test_server_listens_on_loopback_only(self):
         self.assertEqual(self.httpd.server_address[0], "127.0.0.1")

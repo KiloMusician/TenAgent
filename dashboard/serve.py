@@ -27,6 +27,8 @@ from dashboard.security import (
     parse_log_update,
     prepare_config_payload,
     public_config,
+    redact_text,
+    single_line,
     static_target_allowed,
     valid_local_host,
     valid_mutation_origin,
@@ -73,10 +75,14 @@ def is_shell_command(cmd: str) -> bool:
         return True
     return False
 
+def scrub_log_text(text: str) -> str:
+    """One line, no credentials: what is allowed to reach terminal.log and the status file."""
+    return redact_text(single_line(str(text)), (_DASHBOARD_PASSWORD, _SESSION_TOKEN))
+
 def append_to_terminal_log(agent: str, text: str):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     os.makedirs(SPECS_DIR, exist_ok=True)
-    clean = clean_ansi(text).strip()
+    clean = scrub_log_text(clean_ansi(text))
     if not clean:
         return
     with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -1601,7 +1607,7 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 
                 # 1. Log founder prompt to terminal
                 with open(LOG_FILE, "a", encoding="utf-8") as f:
-                    f.write(f"[{ts}] [founder] > {cmd}\n")
+                    f.write(f"[{ts}] [founder] > {scrub_log_text(cmd)}\n")
                 
                 # Read swarm-config.json to check engine mode
                 cfg = {"engine": "native", "providers": []}
@@ -1668,7 +1674,7 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 return
             try:
                 update = parse_log_update(payload)
-                agent_id, message = update.agent, update.message
+                agent_id, message = update.agent, scrub_log_text(update.message)
                 status, progress = update.status, update.progress
 
                 if message:

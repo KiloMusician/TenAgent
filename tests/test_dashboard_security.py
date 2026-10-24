@@ -15,6 +15,7 @@ from dashboard.security import (
     parse_log_update,
     prepare_config_payload,
     public_config,
+    redact_text,
     redact_url,
     single_line,
     valid_local_host,
@@ -167,6 +168,17 @@ class RedactionTests(unittest.TestCase):
         self.assertEqual(mask_key(""), "")
         self.assertEqual(mask_key("a" * 23), "***")
         self.assertEqual(mask_key("abcd" + "x" * 16 + "wxyz"), "abcd...wxyz")
+
+    def test_redact_text_covers_headers_params_and_key_shapes(self):
+        line = ("Authorization: Bearer abc.def-123456 GET /x?key=AIza" + "A" * 30 + "&alt=json "
+                "token=plain password=hunter22 sk-" + "B" * 20 + " keep=me")
+        out = redact_text(line, secrets=("hunter22",))
+        for leaked in ("abc.def-123456", "AIza", "plain", "hunter22", "B" * 20):
+            self.assertNotIn(leaked, out)
+        self.assertIn("alt=json", out)
+        self.assertIn("keep=me", out)
+        self.assertEqual(redact_text("nothing to hide here"), "nothing to hide here")
+        self.assertEqual(redact_text("abc secret=xyz", secrets=("", "abc")), "abc secret=***")
 
 
 class PrepareConfigPayloadTests(unittest.TestCase):

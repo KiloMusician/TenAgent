@@ -338,3 +338,30 @@ def prepare_config_payload(payload, stored) -> dict:
     result["providers"] = providers
     return result
 
+
+_SHAPES = re.compile(
+    r"\b(?:sk-[A-Za-z0-9_-]{16,}|AIza[0-9A-Za-z_-]{20,}|gsk_[A-Za-z0-9]{16,}"
+    r"|xai-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"
+)
+_AUTH_HEADER = re.compile(r"(?i)(\bauthorization\s*[:=]\s*(?:(?:bearer|basic|token)\s+)?)[^\s,;\"']+")
+_BEARER = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]{6,}")
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)(\b[a-z0-9_-]*(?:key|token|secret|password|passwd|passphrase|credential)[a-z0-9_-]*\s*=\s*)"
+    r"[^\s&\"'<>]+"
+)
+
+
+def redact_text(text: str, secrets=()) -> str:
+    """Scrub credentials from a line destined for logs or status files.
+
+    Removes the exact ``secrets`` given (dashboard password, session token),
+    ``Authorization``/``Bearer`` values, ``name=value`` pairs whose name looks
+    like a credential, and strings shaped like common provider keys.
+    """
+    for secret in secrets:
+        if secret and len(secret) >= 6:
+            text = text.replace(secret, "***")
+    text = _AUTH_HEADER.sub(lambda m: m.group(1) + "***", text)
+    text = _BEARER.sub(lambda m: m.group(1) + "***", text)
+    text = _SECRET_ASSIGNMENT.sub(lambda m: m.group(1) + "***", text)
+    return _SHAPES.sub("***", text)
