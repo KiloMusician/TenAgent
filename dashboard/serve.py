@@ -1188,6 +1188,14 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Allow', 'GET, POST')
         self.end_headers()
 
+    def do_HEAD(self):
+        # Avoid inherited SimpleHTTPRequestHandler HEAD bypassing GET guards.
+        if not self._require_dashboard_access():
+            return
+        self.send_response(405)
+        self.send_header('Allow', 'GET, POST')
+        self.end_headers()
+
     def _require_dashboard_access(self, mutation=False):
         port = self.server.server_address[1]
         host = self.headers.get('Host')
