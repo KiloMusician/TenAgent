@@ -885,6 +885,133 @@ class StateFileConcurrencyTests(DashboardCase):
         self.assertEqual(stored["providers"][0]["key"], "sk-test-FAKE-KEEP-333333")
 
 
+class ConfigKeyPreservationTests(DashboardCase):
+    """POST /api/config must never lose, mangle or invent a stored provider key."""
+
+    KEY_A = "sk-test-FAKE-AAAA-1111111111111111"
+    KEY_B = "sk-test-FAKE-BBBB-2222222222222222"
+
+    def mask(self, key):
+        return key[:4] + "..." + key[-4:]
+
+    def seed(self, *entries):
+        self.write_config({"engine": "custom", "providers": list(entries)})
+
+    def save(self, *entries, **extra):
+        return self.post_json("/api/config", {"providers": list(entries), **extra},
+                              headers=self.same_origin_headers())
+
+    def stored_keys(self):
+        return [p.get("key") for p in self.read_config()["providers"]]
+
+    def test_round_tripping_the_redacted_view_keeps_the_key(self):
+        self.seed({"provider": "gemini", "key": self.KEY_A, "name": "g"})
+        view = self.get("/api/config").json()
+        self.assertEqual(self.save(*view["providers"], engine=view["engine"]).status, 200)
+        stored = self.read_config()
+        self.assertEqual(self.stored_keys(), [self.KEY_A])
+        for server_owned in ("has_key", "key_masked"):
+            self.assertNotIn(server_owned, stored["providers"][0])
+        self.assertNotIn("cli", stored)
+
+    def test_absent_key_field_keeps_the_stored_key(self):
+        self.seed({"provider": "gemini", "key": self.KEY_A})
+        self.assertEqual(self.save({"provider": "gemini", "model": "m1"}).status, 200)
+        self.assertEqual(self.stored_keys(), [self.KEY_A])
+        self.assertEqual(self.read_config()["providers"][0]["model"], "m1")
+
+    def test_explicit_empty_key_clears_it(self):
+        self.seed({"provider": "gemini", "key": self.KEY_A})
+        self.assertEqual(self.save({"provider": "gemini", "key": ""}).status, 200)
+        stored = self.read_config()["providers"][0]
+        self.assertEqual(stored["key"], "")
+        self.assertEqual(stored["status"], "empty")
+
+    def test_masked_key_is_restored_and_verified_with_the_real_key(self):
+        self.seed({"provider": "gemini", "key": self.KEY_A})
+        self.assertEqual(self.save({"provider": "gemini", "key": self.mask(self.KEY_A)}).status, 200)
+        self.assertEqual(self.stored_keys(), [self.KEY_A])
+        self.assertEqual([call[1] for call in self.verified], [self.KEY_A])
+
+    def test_masked_key_under_a_different_provider_name_is_refused(self):
+        self.seed({"provider": "gemini", "key": self.KEY_A})
+        before = self.read_config()
+        response = self.save({"provider": "renamed", "key": "***"})
+        self.assertEqual(response.status, 400)
+        self.assertEqual(self.read_config(), before)
+        self.assertEqual(self.verified, [])
+
+    def test_masked_placeholder_is_never_stored_as_a_key(self):
+        self.seed({"provider": "gemini", "key": self.KEY_A})
+        before = self.read_config()
+        response = self.save({"provider": "other", "key": "abcd...wxyz"})
+        self.assertEqual(response.status, 400)
+        self.assertEqual(self.read_config(), before)
+
+    def test_duplicate_provider_ids_keep_their_own_keys(self):
+        self.seed({"provider": "custom", "key": self.KEY_A, "baseUrl": "http://127.0.0.1:1/v1"},
+                  {"provider": "custom", "key": self.KEY_B, "baseUrl": "http://127.0.0.1:2/v1"})
+        view = self.get("/api/config").json()["providers"]
+        self.assertEqual(self.save(*reversed(view)).status, 200)
+        self.assertEqual(self.stored_keys(), [self.KEY_B, self.KEY_A])
+
+    def test_new_key_replaces_the_old_one(self):
+        self.seed({"provider": "gemini", "key": self.KEY_A})
+        self.assertEqual(self.save({"provider": "gemini", "key": self.KEY_B}).status, 200)
+        self.assertEqual(self.stored_keys(), [self.KEY_B])
+
+    def test_removed_providers_are_dropped(self):
+        self.seed({"provider": "gemini", "key": self.KEY_A}, {"provider": "groq", "key": self.KEY_B})
+        self.assertEqual(self.save({"provider": "groq", "key": self.mask(self.KEY_B)}).status, 200)
+        self.assertEqual([p["provider"] for p in self.read_config()["providers"]], ["groq"])
+        self.assertEqual(self.stored_keys(), [self.KEY_B])
+
+    def test_invalid_payload_shapes_change_nothing(self):
+        self.seed({"provider": "gemini", "key": self.KEY_A})
+        before = self.read_config()
+        for payload in ({"providers": "x"}, {"providers": {"a": 1}}, {"providers": [1]},
+                        {"providers": [{"provider": 5, "key": "k"}]},
+                        {"providers": [{"provider": "g", "key": 5}]},
+                        {"providers": [{"provider": "g", "key": ["k"]}]}):
+            with self.subTest(payload=payload):
+                response = self.post_json("/api/config", payload,
+                                          headers=self.same_origin_headers())
+                self.assertEqual(response.status, 400)
+                self.assertNotIn("attribute", response.text())
+                self.assertEqual(self.read_config(), before)
+
+    def test_a_failed_entry_leaves_the_whole_config_untouched(self):
+        self.seed({"provider": "gemini", "key": self.KEY_A})
+        before = self.read_config()
+        response = self.save({"provider": "groq", "key": self.KEY_B},
+                             {"provider": "ghost", "key": "***"})
+        self.assertEqual(response.status, 400)
+        self.assertEqual(self.read_config(), before)
+
+    def test_write_failure_is_reported_and_keeps_the_old_file(self):
+        self.seed({"provider": "gemini", "key": self.KEY_A})
+        before = self.read_config()
+        original = self.serve.atomic_write_json
+        self.serve.atomic_write_json = lambda *a, **k: False
+        self.addCleanup(setattr, self.serve, "atomic_write_json", original)
+        self.assertEqual(self.save({"provider": "gemini", "key": self.KEY_B}).status, 500)
+        self.assertEqual(self.read_config(), before)
+
+    def test_models_endpoint_uses_the_stored_key_for_a_masked_one(self):
+        self.seed({"provider": "gemini", "key": self.KEY_A})
+        response = self.post_json("/api/models", {"provider": "gemini", "key": self.mask(self.KEY_A)},
+                                  headers=self.same_origin_headers())
+        self.assertEqual(response.status, 200)
+        self.assertEqual([call[1] for call in self.verified], [self.KEY_A])
+
+    def test_models_endpoint_never_sends_a_mask_to_a_provider(self):
+        self.seed({"provider": "gemini", "key": self.KEY_A})
+        response = self.post_json("/api/models", {"provider": "unknown", "key": "abcd...wxyz"},
+                                  headers=self.same_origin_headers())
+        self.assertEqual(response.status, 400)
+        self.assertEqual(self.verified, [])
+
+
 class BindingTests(DashboardCase):
     def test_server_listens_on_loopback_only(self):
         self.assertEqual(self.httpd.server_address[0], "127.0.0.1")

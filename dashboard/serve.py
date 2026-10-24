@@ -23,7 +23,9 @@ if DIRECTORY not in sys.path:
     sys.path.insert(0, DIRECTORY)
 
 from dashboard.security import (
+    is_masked_key,
     parse_log_update,
+    prepare_config_payload,
     public_config,
     static_target_allowed,
     valid_local_host,
@@ -1462,29 +1464,28 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             if payload is _BAD_BODY:
                 return
             try:
-                providers = payload.get("providers", [])
-                
                 cfg_file = os.path.join(SPECS_DIR, "swarm-config.json")
-                existing_keys = {}
+                stored_cfg = None
                 if os.path.exists(cfg_file):
                     try:
                         with open(cfg_file, "r", encoding="utf-8") as f:
-                            saved_cfg = json.load(f)
-                            for sp in saved_cfg.get("providers", []):
-                                sp_id = sp.get("provider", "")
-                                if sp_id and sp.get("key"):
-                                    existing_keys[sp_id] = sp.get("key")
-                    except Exception:
-                        pass
+                            stored_cfg = json.load(f)
+                    except (OSError, ValueError):
+                        stored_cfg = None
+                try:
+                    payload = prepare_config_payload(payload, stored_cfg)
+                except ValueError as exc:
+                    self.send_json_response({"error": str(exc)}, 400)
+                    return
+                providers = payload["providers"]
 
                 def validate_single_provider(p_entry):
                     p_id = (p_entry.get("provider") or "").strip()
                     k = (p_entry.get("key") or "").strip()
                     b_url = (p_entry.get("baseUrl") or p_entry.get("base_url") or "").strip()
-                    if ("..." in k or k == "***") and p_id in existing_keys:
-                        k = existing_keys[p_id]
+                    if "key" in p_entry:
                         p_entry["key"] = k
-                    
+
                     if b_url:
                         p_entry["baseUrl"] = b_url
                         p_entry["base_url"] = b_url
@@ -1514,8 +1515,8 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
 
                 self.send_json_response({"ok": True, "config": public_config(payload)})
                 return
-            except Exception as e:
-                self.send_json_response({"error": str(e)}, 400)
+            except Exception:
+                self.send_json_response({"error": "Invalid configuration"}, 400)
                 return
 
         if self.path.startswith('/api/models'):
@@ -1523,26 +1524,35 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             if payload is _BAD_BODY:
                 return
             try:
+                fields = [payload.get(name) for name in ("provider", "key", "baseUrl", "base_url")]
+                if any(value is not None and not isinstance(value, str) for value in fields):
+                    raise ValueError("provider, key and baseUrl must be strings")
                 p_id = (payload.get("provider") or "").strip()
                 k = (payload.get("key") or "").strip()
                 b_url = (payload.get("baseUrl") or payload.get("base_url") or "").strip()
-                if ("..." in k or k == "***"):
+                if is_masked_key(k):
+                    stored_cfg = None
                     cfg_file = os.path.join(SPECS_DIR, "swarm-config.json")
-                    if os.path.exists(cfg_file):
-                        try:
-                            with open(cfg_file, "r", encoding="utf-8") as f:
-                                scfg = json.load(f)
-                                for sp in scfg.get("providers", []):
-                                    if sp.get("provider") == p_id and sp.get("key"):
-                                        k = sp.get("key")
-                                        break
-                        except Exception:
-                            pass
+                    try:
+                        with open(cfg_file, "r", encoding="utf-8") as f:
+                            stored_cfg = json.load(f)
+                    except (OSError, ValueError):
+                        pass
+                    # A masked placeholder is only ever replaced by the stored
+                    # key it came from, never sent to a provider as-is.
+                    k = prepare_config_payload(
+                        {"providers": [{"provider": p_id, "key": k}]}, stored_cfg
+                    )["providers"][0]["key"]
                 ver = verify_ai_provider_key(p_id, k, base_url=b_url)
                 self.send_json_response(ver)
                 return
-            except Exception as e:
-                self.send_json_response({"status": "error", "valid": False, "models": [], "error": str(e)}, 400)
+            except ValueError as exc:
+                self.send_json_response(
+                    {"status": "error", "valid": False, "models": [], "error": str(exc)}, 400)
+                return
+            except Exception:
+                self.send_json_response(
+                    {"status": "error", "valid": False, "models": [], "error": "Invalid request"}, 400)
                 return
 
         if self.path == '/api/command':

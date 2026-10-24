@@ -10,7 +10,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dashboard.security import (
+    mask_key,
     parse_log_update,
+    prepare_config_payload,
     public_config,
     single_line,
     valid_local_host,
@@ -136,6 +138,48 @@ class LogUpdateParsingTests(unittest.TestCase):
     def test_single_line_flattens_every_line_break(self):
         self.assertEqual(single_line("a\r\nb\nc\u2028d\x00e"), "a b c d e")
         self.assertEqual(len(single_line("x" * 5000)), 2000)
+
+
+class PrepareConfigPayloadTests(unittest.TestCase):
+    KEY = "sk-test-FAKE-123-abcdefghijklmnop"
+    STORED = {"providers": [{"provider": "gemini", "key": KEY}]}
+
+    def prepare(self, *entries, **extra):
+        return prepare_config_payload({"providers": list(entries), **extra}, self.STORED)
+
+    def test_absent_null_masked_and_new_keys(self):
+        masked = mask_key(self.KEY)
+        self.assertEqual(self.prepare({"provider": "gemini"})["providers"][0]["key"], self.KEY)
+        self.assertEqual(self.prepare({"provider": "gemini", "key": None})["providers"][0]["key"], self.KEY)
+        self.assertEqual(self.prepare({"provider": "gemini", "key": masked})["providers"][0]["key"], self.KEY)
+        self.assertEqual(self.prepare({"provider": "gemini", "key": ""})["providers"][0]["key"], "")
+        self.assertEqual(self.prepare({"provider": "gemini", "key": "new"})["providers"][0]["key"], "new")
+
+    def test_server_owned_fields_are_not_persisted(self):
+        result = self.prepare({"provider": "gemini", "has_key": True, "key_masked": mask_key(self.KEY)},
+                              cli={"name": "x"}, engine="custom")
+        self.assertNotIn("cli", result)
+        self.assertEqual(result["engine"], "custom")
+        self.assertEqual(set(result["providers"][0]), {"provider", "key"})
+
+    def test_unmatched_placeholder_is_refused(self):
+        for entry in ({"provider": "other", "key": "***"}, {"provider": "gemini", "key": "abcd...wxyz"},
+                      {"provider": "gemini", "key": "..."}):
+            with self.subTest(entry=entry), self.assertRaises(ValueError):
+                self.prepare(entry)
+
+    def test_each_stored_key_is_used_once(self):
+        stored = {"providers": [{"provider": "c", "key": "k" * 20 + "AAAA"},
+                                {"provider": "c", "key": "k" * 20 + "BBBB"}]}
+        result = prepare_config_payload({"providers": [{"provider": "c"}, {"provider": "c"}]}, stored)
+        self.assertEqual([p["key"] for p in result["providers"]],
+                         ["k" * 20 + "AAAA", "k" * 20 + "BBBB"])
+
+    def test_shapes_are_validated(self):
+        for payload in ([], "x", {"providers": "x"}, {"providers": [1]},
+                        {"providers": [{"provider": 1}]}, {"providers": [{"key": 5}]}):
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                prepare_config_payload(payload, self.STORED)
 
 
 if __name__ == "__main__":

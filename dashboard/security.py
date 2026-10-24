@@ -139,10 +139,7 @@ def public_config(config: Mapping) -> dict:
             if not isinstance(key, str):
                 key = str(key)
             visible["has_key"] = bool(key.strip())
-            visible["key_masked"] = (
-                key[:4] + "..." + key[-4:] if len(key) > 8
-                else ("***" if key else "")
-            )
+            visible["key_masked"] = mask_key(key)
     return safe
 
 
@@ -195,3 +192,97 @@ def parse_log_update(payload) -> LogUpdate:
         except (ValueError, OverflowError):
             raise ValueError("invalid progress") from None
     return LogUpdate(agent, single_line(message), status, progress)
+
+
+def mask_key(key: str) -> str:
+    """The redacted form shown to the browser for a stored key."""
+    return key[:4] + "..." + key[-4:] if len(key) > 8 else ("***" if key else "")
+
+
+def is_masked_key(value) -> bool:
+    """True for the placeholders mask_key() produces (and the frontend echoes back)."""
+    return isinstance(value, str) and (value.strip() == "***" or "..." in value)
+
+
+# Fields the server computes for the browser; they are never persisted.
+SERVER_OWNED_CONFIG_FIELDS = ("cli",)
+SERVER_OWNED_PROVIDER_FIELDS = ("has_key", "key_masked")
+
+
+def prepare_config_payload(payload, stored) -> dict:
+    """Validate a POST /api/config body and resolve keys against the stored config.
+
+    * ``key`` absent/null keeps the stored key of the same provider entry
+      (``key_masked``, if echoed back, tells duplicate entries apart);
+    * ``key`` == "" clears it;
+    * a masked placeholder (what GET /api/config shows) is replaced by the stored
+      key it was derived from, and refused if it matches none, so a placeholder
+      can never be persisted as if it were a credential;
+    * anything else is a new key.
+
+    Raises ValueError with a message that is safe to show to the operator.
+    """
+    if not isinstance(payload, Mapping):
+        raise ValueError("JSON object required")
+    entries = payload.get("providers", [])
+    if not isinstance(entries, list):
+        raise ValueError("providers must be a list")
+    stored_entries = [
+        item for item in ((stored or {}).get("providers") or [])
+        if isinstance(item, Mapping) and isinstance(item.get("key"), str) and item["key"]
+    ]
+    used = set()
+
+    def take(predicate):
+        for index, item in enumerate(stored_entries):
+            if index not in used and predicate(item):
+                used.add(index)
+                return item["key"]
+        return None
+
+    prepared = [
+        (name, value) for name, value in payload.items()
+        if name not in SERVER_OWNED_CONFIG_FIELDS
+    ]
+    result = dict(prepared)
+    providers = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise ValueError("each provider must be an object")
+        hint = entry.get("key_masked")  # echoed back by clients that round-trip GET
+        entry = {
+            name: value for name, value in entry.items()
+            if name not in SERVER_OWNED_PROVIDER_FIELDS
+        }
+        provider = entry.get("provider", "")
+        if not isinstance(provider, str):
+            raise ValueError("provider must be a string")
+        key = entry.get("key")
+        if key is not None and not isinstance(key, str):
+            raise ValueError("key must be a string")
+        if key is None:
+            restored = None
+            if isinstance(hint, str) and hint:
+                restored = take(
+                    lambda item: item.get("provider") == provider and mask_key(item["key"]) == hint
+                )
+            if restored is None:
+                restored = take(lambda item: item.get("provider") == provider)
+            if restored is not None:
+                entry["key"] = restored
+        elif is_masked_key(key):
+            shown = key.strip()
+            restored = take(
+                lambda item: item.get("provider") == provider and mask_key(item["key"]) == shown
+            )
+            if restored is None and shown != "***":
+                restored = take(lambda item: mask_key(item["key"]) == shown)
+            if restored is None:
+                raise ValueError(
+                    f"The key shown for '{provider}' is masked and matches no saved key; "
+                    "enter it again."
+                )
+            entry["key"] = restored
+        providers.append(entry)
+    result["providers"] = providers
+    return result
