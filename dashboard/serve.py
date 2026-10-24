@@ -114,7 +114,7 @@ def run_powershell_subprocess(cmd: str, root_dir: str):
                 
             append_to_terminal_log("cli", f"$ {exec_cmd}")
             proc = subprocess.Popen(
-                ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", exec_cmd],
+                ["powershell.exe", "-NoProfile", "-Command", exec_cmd],
                 cwd=root_dir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -143,17 +143,13 @@ def run_agy_prompt(prompt: str, root_dir: str):
     def worker():
         try:
             agy_bin = "agy.exe"
-            # Fallback path if not in env PATH directly
-            custom_agy = r"C:\Users\LENOVO\AppData\Local\agy\bin\agy.exe"
-            if os.path.exists(custom_agy):
-                agy_bin = custom_agy
-
+            # Resolve from PATH rather than a developer-specific home directory.
             append_to_terminal_log("01_pm", "Starting Antigravity AI generation...")
             append_to_terminal_log("01_pm", f"Processing: {prompt}")
             set_agent_status_direct("01_pm", "WORKING", f"Generating response for: {prompt[:40]}...", progress=35)
 
             proc = subprocess.Popen(
-                [agy_bin, "--dangerously-skip-permissions", "-p", prompt],
+                [agy_bin, "-p", prompt],
                 cwd=root_dir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -171,12 +167,13 @@ def run_agy_prompt(prompt: str, root_dir: str):
             code = proc.wait()
             if code != 0:
                 append_to_terminal_log("01_pm", f"Process exited with code {code}")
+                set_agent_status_direct("01_pm", "ERROR", f"AI engine exit code {code}.", progress=0)
             else:
-                append_to_terminal_log("01_pm", "Response completed.")
-            set_agent_status_direct("01_pm", "IDLE", "Standing by for founder requests.", progress=100)
+                append_to_terminal_log("01_pm", "Response generated; verification pending.")
+                set_agent_status_direct("01_pm", "REVIEWING", "AI response received; not verified.", progress=90)
         except Exception as e:
             append_to_terminal_log("01_pm", f"Error communicating with agy: {str(e)}")
-            set_agent_status_direct("01_pm", "IDLE", "Error communicating with AI engine.", progress=100)
+            set_agent_status_direct("01_pm", "ERROR", "Error communicating with AI engine.", progress=0)
 
     threading.Thread(target=worker, daemon=True).start()
 
