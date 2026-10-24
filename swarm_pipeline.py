@@ -14,6 +14,7 @@ import datetime
 import threading
 import urllib.request
 import urllib.error
+import re
 
 import council
 
@@ -580,7 +581,7 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
 
     review_rejected = "REJECTED" in lead_raw.upper()
     # Even an optimistic model verdict is only an opinion, not release proof.
-    advisory = lead_raw.replace("APPROVED FOR PRODUCTION", "AI MODEL OPINION ONLY")
+    advisory = re.sub(r"approved\\s+for\\s+production", "AI MODEL OPINION ONLY", lead_raw, flags=re.I)
     with open(signoff_path, "w", encoding="utf-8") as f:
         f.write("# Draft technical review: NOT VERIFIED FOR PRODUCTION\n\n")
         f.write("No generated QA tests, security scanners, builds or CI jobs were run "
