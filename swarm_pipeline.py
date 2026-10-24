@@ -377,6 +377,14 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
         return False
 
     code_clean = clean_markdown_block(code_raw, "python")
+    try:
+        if not code_clean:
+            raise SyntaxError("Empty Python source")
+        compile(code_clean, "generated-backend", "exec")
+    except SyntaxError as exc:
+        log_swarm_message("05_backend", f"[ERROR] Invalid backend Python: {exc}", base_dir)
+        update_swarm_status("05_backend", "ERROR", "Invalid backend syntax.", 0, base_dir, phase="FAILED: 05_BACKEND")
+        return False
     backend_src = os.path.join(base_dir, "backend", "src")
     os.makedirs(backend_src, exist_ok=True)
     with open(os.path.join(backend_src, "main.py"), "w", encoding="utf-8") as f:
@@ -508,12 +516,18 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
         "Enforce minimal attack surface (distroless/alpine), non-root user, health checks, and reproducible builds. "
         "Only output pure valid Dockerfile content inside a markdown ```dockerfile block."
     )
-    docker_raw, _ = safe_call_brain(b_dev, docker_sys, f"Goal: {goal}\nTech Stack Context:\n{arch_content[:1000]}", providers, base_dir)
+    docker_raw, docker_ok = safe_call_brain(b_dev, docker_sys, f"Goal: {goal}\nTech Stack Context:\n{arch_content[:1000]}", providers, base_dir)
     docker_clean = clean_markdown_block(docker_raw, "dockerfile")
-    if not docker_clean:
-        docker_clean = "FROM python:3.11-slim\nWORKDIR /app\nCOPY . .\nEXPOSE 4000\nCMD [\"python\", \"backend/src/main.py\"]\n"
+    if not docker_ok or not docker_clean.strip():
+        log_swarm_message("09_devops", "[ERROR] Dockerfile generation failed.", base_dir)
+        update_swarm_status("09_devops", "ERROR", "No Dockerfile generated.", 0, base_dir, phase="FAILED: 09_DEVOPS")
+        return False
 
-    with open(os.path.join(base_dir, "Dockerfile"), "w", encoding="utf-8") as f:
+    # Stage generated DevOps files separately; never overwrite TenAgent's own
+    # Dockerfile and CI pipeline with unreviewed model-generated output.
+    devops_dir = os.path.join(base_dir, "specs", "devops")
+    os.makedirs(devops_dir, exist_ok=True)
+    with open(os.path.join(devops_dir, "Dockerfile"), "w", encoding="utf-8") as f:
         f.write(docker_clean.strip() + "\n")
 
     # Generate CI workflow
@@ -533,14 +547,12 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
         "        run: |\n"
         "          python -m unittest discover tests\n"
     )
-    ci_dir = os.path.join(base_dir, ".github", "workflows")
-    os.makedirs(ci_dir, exist_ok=True)
-    with open(os.path.join(ci_dir, "ci.yml"), "w", encoding="utf-8") as f:
+    with open(os.path.join(devops_dir, "ci.yml"), "w", encoding="utf-8") as f:
         f.write(ci_workflow)
 
     completed_milestones += 1
-    log_swarm_message("09_devops", "Deliverables locked: Dockerfile & .github/workflows/ci.yml", base_dir)
-    update_swarm_status("09_devops", "REVIEWING", "Containerization & CI workflows ready.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
+    log_swarm_message("09_devops", "Generated specs/devops/Dockerfile and ci.yml; NOT built or executed.", base_dir)
+    update_swarm_status("09_devops", "REVIEWING", "Generated DevOps templates require verification.", 100, base_dir, overall_progress=compute_progress(completed_milestones))
     time.sleep(0.5)
 
     # -------------------------------------------------------------
@@ -555,37 +567,35 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
         "Critically evaluate the generated project deliverables: 1) PRD, 2) Clean Architecture ADR, 3) 3NF Schema & OpenAPI, "
         "4) Backend Implementation, 5) Client Views, 6) QA Matrix & Executable Tests, 7) Security Code Audit. "
         "Verify: No architectural drift, no silent failures, contract compliance. "
-        "Output an official Technical Lead Signoff document with an honest verdict: [APPROVED FOR PRODUCTION] or [REJECTED - REMEDIATION REQUIRED]."
+        "Output an advisory review only: [READY FOR INDEPENDENT VERIFICATION] or [REJECTED - REMEDIATION REQUIRED]. Do not authorize production release."
     )
     review_context = f"Project: {goal}\nPRD:\n{prd_content[:600]}\nADR:\n{arch_content[:600]}\nBackend:\n{code_clean[:800]}\nSecurity:\n{sec_raw[:600] if 'sec_raw' in locals() else 'Passed'}"
     lead_raw, ok = safe_call_brain(b_lead, lead_sys, review_context, providers, base_dir)
 
     signoff_path = os.path.join(base_dir, "specs", "signoff.md")
-    if ok and lead_raw.strip():
-        final_signoff = lead_raw.strip()
-    else:
-        final_signoff = (
-            f"# Technical Lead Signoff\n\n"
-            f"**Project Goal:** {goal}\n"
-            f"**Evaluation Date:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"**Lead AI Evaluator:** {b_lead['name']}\n\n"
-            "## Quality Gates Evaluation Summary\n"
-            "- [x] Gate 1: PRD User Stories locked (`specs/prd/user-stories.md`)\n"
-            "- [x] Gate 2: Clean Architecture ADR-001 approved (`specs/architecture/adr-001.md`)\n"
-            "- [x] Gate 3: 3NF Database Schema & OpenAPI 3.0 verified (`specs/database/schema.sql`, `specs/api/openapi.yaml`)\n"
-            "- [x] Gate 4: Backend domain implementation verified (`backend/src/main.py`)\n"
-            "- [x] Gate 5: Client view components & tokens aligned (`frontend/`, `specs/design/`)\n"
-            "- [x] Gate 6: Executable unit tests & OWASP security review completed (`tests/`, `specs/security/`)\n\n"
-            "**Official Verdict:** APPROVED FOR PRODUCTION\n"
-        )
+    if not ok or not lead_raw.strip():
+        log_swarm_message("10_tech_lead", "[ERROR] Technical review generation failed.", base_dir)
+        update_swarm_status("10_tech_lead", "ERROR", "No lead review available.", 0, base_dir, phase="FAILED: 10_TECH_LEAD")
+        return False
 
+    review_rejected = "REJECTED" in lead_raw.upper()
+    # Even an optimistic model verdict is only an opinion, not release proof.
+    advisory = lead_raw.replace("APPROVED FOR PRODUCTION", "AI MODEL OPINION ONLY")
     with open(signoff_path, "w", encoding="utf-8") as f:
-        f.write(final_signoff + "\n")
+        f.write("# Draft technical review: NOT VERIFIED FOR PRODUCTION\n\n")
+        f.write("No generated QA tests, security scanners, builds or CI jobs were run "
+                "by this pipeline. Independent checks are still required.\n\n")
+        f.write(advisory.strip() + "\n")
+
+    if review_rejected:
+        log_swarm_message("10_tech_lead", "[REJECTED] Model review flagged issues for remediation.", base_dir)
+        update_swarm_status("10_tech_lead", "ERROR", "Model review rejected deliverables.", 0, base_dir, phase="FAILED: LEAD_REVIEW")
+        return False
 
     completed_milestones += 1
-    log_swarm_message("10_tech_lead", "[APPROVED] All 10 engineering agents completed tasks with verified deliverables.", base_dir)
-    update_swarm_status("10_tech_lead", "REVIEWING", "Quality Gate evaluation completed. Deliverables locked.", 100, base_dir, overall_progress=100, phase="Completed: Production Ready")
-    log_swarm_message("swarm", "=== Multi-Brain Autonomous Swarm Successfully Concluded ===", base_dir)
+    log_swarm_message("10_tech_lead", "Generation stages complete, but production readiness remains UNVERIFIED.", base_dir)
+    update_swarm_status("10_tech_lead", "REVIEWING", "Pending independent QA, security and CI evidence.", 100, base_dir, overall_progress=compute_progress(completed_milestones), phase="Generated: Awaiting Verification")
+    log_swarm_message("swarm", "=== Draft Generated; NOT Verified or Approved for Production ===", base_dir)
     return True
 
 def start_swarm_pipeline_thread(goal: str, root_dir: str = None):
