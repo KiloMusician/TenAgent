@@ -177,9 +177,9 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
     brains = assign_brains_to_agents(providers)
 
     if not providers:
-        log_swarm_message("swarm", "No active external AI providers connected. Launching via native assistant CLI...", base_dir)
-        update_swarm_status("01_pm", "WORKING", "Delegating to local CLI assistant.", 10, base_dir, overall_progress=10, phase="Phase 1: Discovery")
-        return True
+        log_swarm_message("swarm", "[ERROR] No active AI provider; no engineering stages executed.", base_dir)
+        update_swarm_status("01_pm", "ERROR", "No AI provider available.", 0, base_dir, overall_progress=0, phase="FAILED: NO_PROVIDER")
+        return False
 
     log_swarm_message("swarm", f"=== Multi-Brain Collaborative Swarm Activated for: '{goal[:60]}...' ===", base_dir)
     log_swarm_message("swarm", f"Active Brains: {', '.join(p['name'] for p in providers)}", base_dir)
@@ -189,7 +189,8 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
     completed_milestones = 0
 
     def compute_progress(step_num):
-        return int((step_num / TOTAL_MILESTONES) * 100)
+        # Generation alone cannot satisfy the downstream verification/release gates.
+        return min(90, int((step_num / TOTAL_MILESTONES) * 90))
 
     # -------------------------------------------------------------
     # PRE-FLIGHT MULTI-AI COUNCIL DEBATE (If 2+ Providers Connected)
@@ -279,14 +280,14 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
         "typography (fontFamily, scale), and spacing. Only output pure JSON inside a markdown ```json block."
     )
     tokens_raw, ok = safe_call_brain(b_des, des_sys, f"Project Goal: {goal}\nPRD Context:\n{prd_content[:1500]}", providers, base_dir)
-    if not ok or not tokens_raw.strip():
-        tokens_clean = json.dumps({
-            "colors": {"primary": "#2563eb", "surface": "#1e293b", "background": "#0f172a", "textPrimary": "#f8fafc", "border": "#334155"},
-            "typography": {"fontFamily": "Inter, system-ui, sans-serif", "baseSize": "14px"},
-            "spacing": {"sm": "8px", "md": "16px", "lg": "24px"}
-        }, indent=2)
-    else:
-        tokens_clean = clean_markdown_block(tokens_raw, "json")
+    tokens_clean = clean_markdown_block(tokens_raw, "json") if ok else ""
+    try:
+        if not tokens_clean or not isinstance(json.loads(tokens_clean), dict):
+            raise ValueError("Design tokens must be a nonempty JSON object.")
+    except (ValueError, json.JSONDecodeError) as exc:
+        log_swarm_message("03_designer", f"[ERROR] Design token generation invalid: {exc}", base_dir)
+        update_swarm_status("03_designer", "ERROR", "Invalid or missing design tokens.", 0, base_dir, phase="FAILED: 03_DESIGNER")
+        return False
 
     design_dir = os.path.join(base_dir, "specs", "design")
     os.makedirs(design_dir, exist_ok=True)
@@ -297,9 +298,13 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
         "You are the Senior UI/UX Designer. Create a concise Screen Flow Document (screen-flows.md). "
         "Detail the primary user journeys, screen layout hierarchy, and tactile interaction patterns. Output clean Markdown."
     )
-    screen_flow_content, _ = safe_call_brain(b_des, screen_flow_sys, f"Project: {goal}\nTokens:\n{tokens_clean[:500]}", providers, base_dir)
+    screen_flow_content, flow_ok = safe_call_brain(b_des, screen_flow_sys, f"Project: {goal}\nTokens:\n{tokens_clean[:500]}", providers, base_dir)
+    if not flow_ok or not screen_flow_content.strip():
+        log_swarm_message("03_designer", "[ERROR] Screen-flow generation failed.", base_dir)
+        update_swarm_status("03_designer", "ERROR", "Screen flows unavailable.", 0, base_dir, phase="FAILED: 03_DESIGNER")
+        return False
     with open(os.path.join(design_dir, "screen-flows.md"), "w", encoding="utf-8") as f:
-        f.write((screen_flow_content or f"# Screen Flows for {goal}\n\n1. Dashboard Overview\n2. Details & Management\n").strip() + "\n")
+        f.write(screen_flow_content.strip() + "\n")
 
     completed_milestones += 1
     log_swarm_message("03_designer", "Deliverables locked: specs/design/tokens.json & screen-flows.md", base_dir)
@@ -338,7 +343,9 @@ def execute_multi_brain_swarm(goal: str, root_dir: str = None):
     api_raw, ok = safe_call_brain(b_dba, api_sys, f"Project: {goal}\nDatabase Schema:\n{sql_clean[:1500]}", providers, base_dir)
     api_clean = clean_markdown_block(api_raw, "yaml") if ok else ""
     if not api_clean or "openapi:" not in api_clean:
-        api_clean = f"openapi: 3.0.0\ninfo:\n  title: {goal} API\n  version: 1.0.0\npaths:\n  /health:\n    get:\n      responses:\n        '200':\n          description: Healthy\n"
+        log_swarm_message("04_dba", "[ERROR] OpenAPI generation returned no contract.", base_dir)
+        update_swarm_status("04_dba", "ERROR", "Missing OpenAPI specification.", 0, base_dir, phase="FAILED: 04_DBA")
+        return False
 
     api_dir = os.path.join(base_dir, "specs", "api")
     os.makedirs(api_dir, exist_ok=True)
