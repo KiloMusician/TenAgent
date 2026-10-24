@@ -7,8 +7,10 @@ sockets.  See ``http_harness.py`` for the isolation guarantees.
 
 import json
 import shutil
+import socket
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -605,6 +607,128 @@ class StaticGuardBypassTests(DashboardCase):
                        "/specs/swarm-status.json"):
             with self.subTest(target=target):
                 self.assertEqual(self.get(target).status, 200)
+
+
+class RequestBodyTests(DashboardCase):
+    """Body handling must fail closed, quickly, and with a real HTTP answer."""
+
+    ENDPOINTS = ("/api/config", "/api/models", "/api/command", "/api/log")
+
+    def post(self, path, body=b"", extra=(), declared=None):
+        headers = [("Content-Type", "application/json"),
+                   ("Origin", f"http://{self.local_host}"),
+                   ("Sec-Fetch-Site", "same-origin"),
+                   ("X-TenAgent-Token", FAKE_SESSION_TOKEN)]
+        headers += list(extra)
+        if declared is not None:
+            headers.append(("Content-Length", str(declared)))
+        return self.raw_request("POST", path, headers=headers, body=body, timeout=6,
+                                shutdown_write=True)
+
+    def test_non_numeric_content_length_is_a_400(self):
+        for path in self.ENDPOINTS:
+            for declared in ("abc", "1e3", "0x10", "12 34", "+-5", ""):
+                with self.subTest(path=path, declared=declared):
+                    self.assertEqual(self.post(path, b"{}", declared=declared).status, 400)
+
+    def test_negative_content_length_does_not_hang(self):
+        for path in self.ENDPOINTS:
+            with self.subTest(path=path):
+                started = time.monotonic()
+                response = self.post(path, b"{}", declared=-1)
+                self.assertEqual(response.status, 400)
+                self.assertLess(time.monotonic() - started, 4)
+
+    def test_oversized_declared_length_is_refused_without_reading_it(self):
+        for path in self.ENDPOINTS:
+            with self.subTest(path=path):
+                started = time.monotonic()
+                response = self.post(path, b"{}", declared=50_000_000)
+                self.assertEqual(response.status, 413)
+                self.assertLess(time.monotonic() - started, 4)
+
+    def test_oversized_actual_body_is_refused(self):
+        body = b'{"message":"' + b"x" * (2 * 1024 * 1024) + b'"}'
+        self.assertEqual(self.post("/api/log", body).status, 413)
+        self.assertEqual(self.read_log(), "")
+
+    def test_body_below_the_limit_is_accepted(self):
+        body = json.dumps({"agent": "cli", "message": "y" * 900_000}).encode()
+        self.assertEqual(self.post("/api/log", body).status, 200)
+
+    def test_truncated_body_is_a_400(self):
+        response = self.post("/api/log", b'{"mess', declared=500)
+        self.assertEqual(response.status, 400)
+
+    def test_chunked_bodies_are_refused(self):
+        response = self.post(
+            "/api/log", b'a\r\n{"agent":"x"}\r\n0\r\n\r\n',
+            extra=[("Transfer-Encoding", "chunked")])
+        self.assertEqual(response.status, 411)
+        self.assertEqual(self.read_log(), "")
+
+    def test_malformed_payloads_are_a_400_not_a_dropped_connection(self):
+        for path in self.ENDPOINTS:
+            for label, body in (("non-utf8", b"\xff\xfe{"), ("not json", b"{nope"),
+                                ("array", b"[1,2]"), ("scalar", b"7"), ("null", b"null"),
+                                ("empty", b""), ("nesting", b"[" * 100_000)):
+                with self.subTest(path=path, body=label):
+                    self.assertEqual(self.post(path, body).status, 400)
+
+    def test_error_bodies_do_not_echo_exception_internals(self):
+        response = self.post("/api/config", b'{"providers": 5}')
+        self.assertEqual(response.status, 400)
+        self.assertNotIn("object has no attribute", response.text())
+        self.assertNotIn("Traceback", response.text())
+
+    def test_rejected_post_still_delivers_its_answer_when_the_body_follows(self):
+        # http.client (and some browsers) send the headers first and the body
+        # afterwards.  If the server answers 401/403 and closes while unread
+        # body bytes are still coming, Windows answers them with a reset and the
+        # client's recv() fails instead of returning the status line.
+        body = b"x" * 300_000
+        cases = (
+            ("no-credentials", False, ""),
+            ("bad-origin", True, "Origin: http://hostile.example\r\n"),
+        )
+        for label, with_auth, extra in cases:
+            with self.subTest(case=label):
+                sock = socket.create_connection(("127.0.0.1", self.port), timeout=8)
+                head = (
+                    f"POST /api/log HTTP/1.1\r\nHost: {self.local_host}\r\n"
+                    + (f"Authorization: {self.auth_header}\r\n" if with_auth else "")
+                    + extra
+                    + f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n"
+                ).encode()
+                received = b""
+                try:
+                    sock.sendall(head)
+                    time.sleep(0.4)  # the server has answered (and, unfixed, closed)
+                    try:
+                        sock.sendall(body)
+                    except OSError:
+                        pass
+                    while True:
+                        chunk = sock.recv(65536)
+                        if not chunk:
+                            break
+                        received += chunk
+                except OSError:
+                    pass
+                finally:
+                    sock.close()
+                self.assertRegex(received[:12], rb"HTTP/1\.[01] (401|403)", label)
+
+    def test_slow_clients_are_disconnected(self):
+        handler = self.serve.SwarmHandler
+        self.assertIsNotNone(handler.timeout)
+        self.assertLessEqual(handler.timeout, 120)
+        self.addCleanup(setattr, handler, "timeout", handler.timeout)
+        handler.timeout = 1
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=6)
+        self.addCleanup(sock.close)
+        sock.sendall(b"GET /api/csrf-token HTTP/1.1\r\nHost: ")  # never finishes
+        self.assertEqual(sock.recv(1024)[:0], b"")  # EOF (or error page), not a hang
 
 
 class BindingTests(DashboardCase):

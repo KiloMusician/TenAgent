@@ -1174,8 +1174,14 @@ def start_workspace_watcher(root_dir: str):
 
 STATIC_STATE_FILES = ('/specs/swarm-status.json', '/specs/terminal.log')
 STATIC_PREFIXES = ('/dashboard/', '/assets/', '/favicon.')
+MAX_BODY_BYTES = 1024 * 1024
+MAX_DRAIN_BYTES = 16 * 1024 * 1024  # how much of a rejected body is read and discarded
+_BAD_BODY = object()  # returned by _read_json_body after it has sent the error reply
 
 class SwarmHandler(http.server.SimpleHTTPRequestHandler):
+    # Drop clients that stall mid-request instead of pinning a thread forever.
+    timeout = 30
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=DIRECTORY, **kwargs)
 
@@ -1230,6 +1236,63 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return False
         return True
+
+    def _declared_length(self):
+        """Content-Length as a non-negative int, or None when absent/invalid."""
+        raw = self.headers.get('Content-Length')
+        if raw is None:
+            return 0
+        raw = raw.strip()
+        return int(raw) if raw.isascii() and raw.isdigit() else None
+
+    def _read_json_body(self):
+        """Read and parse a JSON object body, or send the error and return _BAD_BODY."""
+        if self.headers.get('Transfer-Encoding'):
+            self.send_json_response({"error": "Chunked request bodies are not supported"}, 411)
+            return _BAD_BODY
+        length = self._declared_length()
+        if length is None:
+            self.send_json_response({"error": "Invalid Content-Length"}, 400)
+            return _BAD_BODY
+        if length > MAX_BODY_BYTES:
+            self.send_json_response({"error": "Request body too large"}, 413)
+            return _BAD_BODY
+        try:
+            raw = self.rfile.read(length)
+        except OSError:
+            self.close_connection = True
+            return _BAD_BODY
+        self._consumed = length
+        if len(raw) != length:
+            self.send_json_response({"error": "Incomplete request body"}, 400)
+            return _BAD_BODY
+        try:
+            payload = json.loads(raw.decode('utf-8'))
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            self.send_json_response({"error": "Request body is not valid JSON"}, 400)
+            return _BAD_BODY
+        if not isinstance(payload, dict):
+            self.send_json_response({"error": "JSON object required"}, 400)
+            return _BAD_BODY
+        return payload
+
+    def _discard_unread_body(self):
+        """Drain a rejected request's body so closing does not reset the connection.
+
+        Windows answers data that arrives after close() with a reset, which can
+        make the client lose the 401/403/413 we already sent.
+        """
+        try:
+            remaining = min(self._declared_length() or 0, MAX_DRAIN_BYTES)
+            remaining -= getattr(self, '_consumed', 0)
+            self.wfile.flush()
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except (OSError, ValueError):
+            pass
 
     def send_json_response(self, data, status_code=200):
         try:
@@ -1395,16 +1458,19 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
             pass
 
     def do_POST(self):
+        try:
+            self._handle_post()
+        finally:
+            self._discard_unread_body()
+
+    def _handle_post(self):
         if not self._require_dashboard_access(mutation=True):
             return
         if self.path == '/api/config':
-            try:
-                content_length = int(self.headers.get('Content-Length', 0))
-                body = self.rfile.read(content_length).decode('utf-8')
-            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            payload = self._read_json_body()
+            if payload is _BAD_BODY:
                 return
             try:
-                payload = json.loads(body)
                 providers = payload.get("providers", [])
                 
                 cfg_file = os.path.join(SPECS_DIR, "swarm-config.json")
@@ -1460,10 +1526,10 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
         if self.path.startswith('/api/models'):
+            payload = self._read_json_body()
+            if payload is _BAD_BODY:
+                return
             try:
-                content_length = int(self.headers.get('Content-Length', 0))
-                body = self.rfile.read(content_length).decode('utf-8')
-                payload = json.loads(body)
                 p_id = (payload.get("provider") or "").strip()
                 k = (payload.get("key") or "").strip()
                 b_url = (payload.get("baseUrl") or payload.get("base_url") or "").strip()
@@ -1514,14 +1580,15 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json_response({"error": "Forbidden: Invalid or missing CSRF session token"}, 403)
                 return
 
-            try:
-                content_length = int(self.headers.get('Content-Length', 0))
-                body = self.rfile.read(content_length).decode('utf-8')
-            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            payload = self._read_json_body()
+            if payload is _BAD_BODY:
                 return
             try:
-                payload = json.loads(body)
-                cmd = payload.get('command', '').strip()
+                command = payload.get('command', '')
+                if not isinstance(command, str):
+                    self.send_json_response({"error": "command must be a string"}, 400)
+                    return
+                cmd = command.strip()
                 if not cmd:
                     self.send_json_response({"error": "Empty command"}, 400)
                     return
@@ -1593,13 +1660,11 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
         if self.path == '/api/log':
-            try:
-                content_length = int(self.headers.get('Content-Length', 0))
-                body = self.rfile.read(content_length).decode('utf-8')
-            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            payload = self._read_json_body()
+            if payload is _BAD_BODY:
                 return
             try:
-                update = parse_log_update(json.loads(body))
+                update = parse_log_update(payload)
                 agent_id, message = update.agent, update.message
                 status, progress = update.status, update.progress
 
