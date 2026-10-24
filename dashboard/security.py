@@ -54,7 +54,7 @@ def valid_mutation_origin(
 
 def valid_static_path(path: str) -> bool:
     """Prevent URL decoding from bypassing the raw static-file path filter."""
-    if not path or '%' in path or '\\\\' in path:
+    if not path or '%' in path or '\\' in path:
         return False
     return not any(
         segment in ('.', '..') or segment.startswith('.')
