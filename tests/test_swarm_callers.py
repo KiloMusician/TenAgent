@@ -292,6 +292,14 @@ class DashboardWriters(unittest.TestCase):
     def read_log(self):
         return (self.root / "specs" / "terminal.log").read_text(encoding="utf-8")
 
+    def test_failed_pill_looks_like_the_error_pill(self):
+        with open(os.path.join(support.REPO_ROOT, "dashboard", "index.html"), encoding="utf-8") as f:
+            html = f.read()
+        rules = {name: re.search(r"\." + name + r"\s*\{([^}]*)\}", html) for name in ("status-ERROR", "status-FAILED")}
+        self.assertTrue(rules["status-ERROR"], "ERROR pill style missing")
+        self.assertTrue(rules["status-FAILED"], "FAILED pill style missing")
+        self.assertEqual(rules["status-FAILED"].group(1).strip(), rules["status-ERROR"].group(1).strip())
+
     def test_run_record_and_lock_are_not_mistaken_for_agent_work(self):
         self.assertIn("swarm-run.json", self.serve.IGNORE_FILES)
         self.assertIn(".swarm-run.lock", self.serve.IGNORE_FILES)
