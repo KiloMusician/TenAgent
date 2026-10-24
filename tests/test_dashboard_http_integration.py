@@ -1467,6 +1467,98 @@ class ServerSideScrubbingTests(DashboardCase):
             self.assertNotIn(secret, log)
 
 
+class UnreadableConfigTests(DashboardCase):
+    """A config that exists but cannot be understood must not look like an empty one."""
+
+    KEY = "sk-test-FAKE-CORRUPT-0123456789abcdef"
+
+    def bad_files(self):
+        key = self.KEY
+        return {
+            "truncated": ('{"engine": "custom", "providers": [{"provider": "gemini", "key": "%s"' % key).encode(),
+            "list": b'[1, 2, 3]',
+            "string": b'"just text"',
+            "providers-not-a-list": ('{"providers": "%s"}' % key).encode(),
+            "provider-not-an-object": ('{"providers": [5, {"provider": "g", "key": "%s"}]}' % key).encode(),
+            "binary": b"\xff\xfe\x00garbage",
+        }
+
+    def corrupt_copies(self):
+        return sorted(p.name for p in (self.root / "specs").glob("swarm-config.json.*.corrupt"))
+
+    def test_get_reports_an_error_instead_of_an_empty_provider_list(self):
+        import hashlib
+        path = self.root / "specs" / "swarm-config.json"
+        for label, content in self.bad_files().items():
+            with self.subTest(case=label):
+                path.write_bytes(content)
+                for _ in range(2):
+                    response = self.get("/api/config")
+                    self.assertEqual(response.status, 500)
+                    self.assertTrue(response.json().get("config_error"))
+                    self.assertNotIn(self.KEY, response.text())
+                    self.assertEqual(path.read_bytes(), content)
+                expected = "swarm-config.json.%s.corrupt" % hashlib.sha256(content).hexdigest()[:16]
+                self.assertIn(expected, self.corrupt_copies())
+                self.assertEqual((self.root / "specs" / expected).read_bytes(), content)
+                for stale in self.root.joinpath("specs").glob("*.corrupt"):
+                    stale.unlink()
+
+    def test_the_copy_is_made_once_per_distinct_content(self):
+        path = self.root / "specs" / "swarm-config.json"
+        path.write_bytes(self.bad_files()["list"])
+        self.get("/api/config")
+        self.get("/api/config")
+        self.assertEqual(len(self.corrupt_copies()), 1)
+        path.write_bytes(self.bad_files()["string"])
+        self.get("/api/config")
+        self.assertEqual(len(self.corrupt_copies()), 2)
+
+    def test_post_refuses_to_overwrite_an_unreadable_config(self):
+        path = self.root / "specs" / "swarm-config.json"
+        for label, content in self.bad_files().items():
+            with self.subTest(case=label):
+                path.write_bytes(content)
+                for payload in ({"providers": []}, {"engine": "native", "providers": [
+                        {"provider": "gemini", "key": "sk-test-FAKE-NEW-1234567890123456"}]}):
+                    response = self.post_json("/api/config", payload, headers=self.same_origin_headers())
+                    self.assertEqual(response.status, 409)
+                    self.assertIn("swarm-config.json", response.json()["error"])
+                    self.assertEqual(path.read_bytes(), content)
+                self.assertEqual(self.verified, [])
+
+    def test_empty_files_hold_nothing_to_protect(self):
+        path = self.root / "specs" / "swarm-config.json"
+        for content in (b"", b"  \r\n\t "):
+            with self.subTest(content=content):
+                path.write_bytes(content)
+                got = self.get("/api/config")
+                self.assertEqual((got.status, got.json()["providers"]), (200, []))
+                saved = self.post_json("/api/config", {"providers": [
+                    {"provider": "gemini", "key": "sk-test-FAKE-NEW-1234567890123456"}]},
+                    headers=self.same_origin_headers())
+                self.assertEqual(saved.status, 200)
+        self.assertEqual(self.corrupt_copies(), [])
+
+    def test_kept_copies_are_neither_served_nor_committable(self):
+        path = self.root / "specs" / "swarm-config.json"
+        path.write_bytes(self.bad_files()["list"])
+        self.get("/api/config")
+        name = self.corrupt_copies()[0]
+        for target in ("/specs/" + name, "/dashboard/../specs/" + name):
+            self.assertIn(self.raw_request("GET", target).status, (403, 404))
+        ignore = (Path(self.serve.__file__).resolve().parents[1] / ".gitignore").read_text("utf-8")
+        self.assertIn("specs/swarm-config.json.*.corrupt", ignore)
+
+    def test_readable_and_missing_configs_behave_as_before(self):
+        self.assertEqual(self.get("/api/config").status, 200)  # missing: example copied or defaults
+        self.write_config({"engine": "custom", "providers": [{"provider": "gemini", "key": self.KEY}]})
+        got = self.get("/api/config")
+        self.assertEqual(got.status, 200)
+        self.assertTrue(got.json()["providers"][0]["has_key"])
+        self.assertEqual(self.corrupt_copies(), [])
+
+
 class FetchMetadataReadTests(DashboardCase):
     """Cross-site pages must not be able to trigger the JSON API with the cached credentials."""
 

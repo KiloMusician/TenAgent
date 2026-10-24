@@ -11,6 +11,7 @@ import socket
 import webbrowser
 import os
 import sys
+import hashlib
 import secrets
 
 _SESSION_TOKEN = secrets.token_hex(24)
@@ -26,6 +27,7 @@ if DIRECTORY not in sys.path:
 
 from dashboard.security import (
     api_fetch_site_allowed,
+    config_problem,
     is_http_url,
     is_masked_key,
     parse_log_update,
@@ -84,6 +86,40 @@ def is_shell_command(cmd: str) -> bool:
     if any(op in c for op in ("|", "&&", "||", ";", ">", "<")):
         return True
     return False
+
+def read_stored_config(cfg_file: str):
+    """Returns (config, None); (None, None) if absent or empty; (None, problem) if unusable.
+
+    An unusable file is copied aside once (name = hash of its bytes) so that nothing
+    that happens afterwards can destroy the only copy of the keys it may still hold.
+    """
+    try:
+        with open(cfg_file, "rb") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return None, None
+    except OSError:
+        return None, "cannot be read"
+    if not raw.strip():
+        return None, None
+    try:
+        config = json.loads(raw.decode("utf-8"))
+        problem = config_problem(config)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        config, problem = None, "is not valid JSON"
+    if problem is None:
+        return config, None
+    copy = f"{cfg_file}.{hashlib.sha256(raw).hexdigest()[:16]}.corrupt"
+    try:
+        with open(copy, "xb") as f:
+            f.write(raw)
+    except OSError:
+        pass  # already kept, or not writable: the original stays untouched either way
+    return None, problem
+
+def unusable_config_message(problem: str) -> str:
+    return (f"specs/swarm-config.json {problem}. A copy was kept beside it as *.corrupt. "
+            "Fix or remove the file; saving is refused until then so no keys are lost.")
 
 def scrub_log_text(text: str) -> str:
     """One line, no credentials: what is allowed to reach terminal.log and the status file."""
@@ -1469,6 +1505,11 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                     except Exception:
                         pass
 
+            _, problem = read_stored_config(cfg_file)
+            if problem:
+                self.send_json_response(
+                    {"error": unusable_config_message(problem), "config_error": True}, 500)
+                return
             if os.path.exists(cfg_file):
                 try:
                     # Merges probe results into the file (credentials untouched),
@@ -1529,13 +1570,10 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                 return
             try:
                 cfg_file = os.path.join(SPECS_DIR, "swarm-config.json")
-                stored_cfg = None
-                if os.path.exists(cfg_file):
-                    try:
-                        with open(cfg_file, "r", encoding="utf-8") as f:
-                            stored_cfg = json.load(f)
-                    except (OSError, ValueError):
-                        stored_cfg = None
+                stored_cfg, problem = read_stored_config(cfg_file)
+                if problem:
+                    self.send_json_response({"error": unusable_config_message(problem)}, 409)
+                    return
                 try:
                     payload = prepare_config_payload(payload, stored_cfg)
                 except ValueError as exc:

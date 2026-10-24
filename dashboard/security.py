@@ -238,6 +238,18 @@ def parse_log_update(payload) -> LogUpdate:
 MASK_REVEAL_MIN_LENGTH = 24
 
 
+def config_problem(config) -> str | None:
+    """Why a parsed swarm-config.json cannot be trusted as a configuration, or None."""
+    if not isinstance(config, Mapping):
+        return "is not a JSON object"
+    providers = config.get("providers", [])
+    if not isinstance(providers, list):
+        return "has a providers entry that is not a list"
+    if not all(isinstance(item, Mapping) for item in providers):
+        return "has a provider entry that is not an object"
+    return None
+
+
 def mask_key(key: str) -> str:
     """The redacted form shown to the browser for a stored key.
 
