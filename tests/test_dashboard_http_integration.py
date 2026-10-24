@@ -1004,6 +1004,64 @@ class ConfigKeyPreservationTests(DashboardCase):
         self.assertEqual(response.status, 200)
         self.assertEqual([call[1] for call in self.verified], [self.KEY_A])
 
+    def test_a_stored_key_is_only_restored_for_the_same_base_url(self):
+        url = "http://127.0.0.1:20128/v1"
+        self.seed({"provider": "custom", "key": self.KEY_A, "baseUrl": url})
+        before = self.read_config()
+        for label, entry in {
+            "masked-other-url": {"provider": "custom", "key": self.mask(self.KEY_A),
+                                 "baseUrl": "http://attacker.invalid/v1"},
+            "masked-other-url-snake": {"provider": "custom", "key": self.mask(self.KEY_A),
+                                       "base_url": "http://attacker.invalid/v1"},
+            "masked-url-removed": {"provider": "custom", "key": self.mask(self.KEY_A), "baseUrl": ""},
+            "absent-key-other-url": {"provider": "custom", "baseUrl": "http://attacker.invalid/v1"},
+            "null-key-other-url": {"provider": "custom", "key": None,
+                                   "baseUrl": "http://attacker.invalid/v1"},
+        }.items():
+            with self.subTest(case=label):
+                response = self.save(entry)
+                self.assertEqual(response.status, 400)
+                self.assertIn("enter", response.text())
+                self.assertEqual(self.read_config(), before)
+        self.assertEqual(self.verified, [], "the key must never be sent anywhere")
+
+    def test_restoring_still_works_for_the_same_or_unspecified_base_url(self):
+        url = "http://127.0.0.1:20128/v1"
+        self.seed({"provider": "custom", "key": self.KEY_A, "baseUrl": url})
+        for entry in ({"provider": "custom", "key": self.mask(self.KEY_A), "baseUrl": url},
+                      {"provider": "custom", "key": self.mask(self.KEY_A), "baseUrl": url + " "},
+                      {"provider": "custom", "key": self.mask(self.KEY_A), "base_url": url},
+                      {"provider": "custom", "key": self.mask(self.KEY_A)},
+                      {"provider": "custom", "baseUrl": url}):
+            with self.subTest(entry=entry):
+                self.assertEqual(self.save(dict(entry)).status, 200)
+                self.assertEqual(self.stored_keys(), [self.KEY_A])
+                self.seed({"provider": "custom", "key": self.KEY_A, "baseUrl": url})
+
+    def test_models_endpoint_applies_the_same_base_url_rule(self):
+        url = "http://127.0.0.1:20128/v1"
+        self.seed({"provider": "custom", "key": self.KEY_A, "baseUrl": url})
+        refused = self.post_json("/api/models", {"provider": "custom", "key": self.mask(self.KEY_A),
+                                                 "baseUrl": "http://attacker.invalid/v1"},
+                                 headers=self.same_origin_headers())
+        self.assertEqual(refused.status, 400)
+        self.assertEqual(self.verified, [])
+        allowed = self.post_json("/api/models", {"provider": "custom", "key": self.mask(self.KEY_A),
+                                                 "baseUrl": url}, headers=self.same_origin_headers())
+        self.assertEqual(allowed.status, 200)
+        self.assertEqual([call[1:] for call in self.verified], [(self.KEY_A, url)])
+
+    def test_reading_the_config_does_not_rewrite_it(self):
+        self.seed({"provider": "9router", "key": self.KEY_A, "baseUrl": "http://127.0.0.1:9/v1",
+                   "status": "connection_error", "statusDetail": "Offline", "valid": False})
+        path = self.root / "specs" / "swarm-config.json"
+        before_bytes, before_mtime = path.read_bytes(), path.stat().st_mtime_ns
+        time.sleep(0.05)
+        for _ in range(3):
+            self.assertEqual(self.get("/api/config").status, 200)
+        self.assertEqual(path.read_bytes(), before_bytes)
+        self.assertEqual(path.stat().st_mtime_ns, before_mtime)
+
     def test_models_endpoint_never_sends_a_mask_to_a_provider(self):
         self.seed({"provider": "gemini", "key": self.KEY_A})
         response = self.post_json("/api/models", {"provider": "unknown", "key": "abcd...wxyz"},

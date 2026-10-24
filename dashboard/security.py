@@ -270,7 +270,9 @@ def prepare_config_payload(payload, stored) -> dict:
       can never be persisted as if it were a credential;
     * anything else is a new key.
 
-    Raises ValueError with a message that is safe to show to the operator.
+    A stored key is only ever restored into an entry whose baseUrl is unchanged (or not
+    mentioned): otherwise the server would send the stored credential to whatever URL the
+    request names.  Raises ValueError with a message that is safe to show to the operator.
     """
     if not isinstance(payload, Mapping):
         raise ValueError("JSON object required")
@@ -290,6 +292,9 @@ def prepare_config_payload(payload, stored) -> dict:
                 return item["key"]
         return None
 
+    def url_of(mapping):
+        return (mapping.get("baseUrl") or mapping.get("base_url") or "").strip()
+
     prepared = [
         (name, value) for name, value in payload.items()
         if name not in SERVER_OWNED_CONFIG_FIELDS
@@ -307,32 +312,7 @@ def prepare_config_payload(payload, stored) -> dict:
         provider = entry.get("provider", "")
         if not isinstance(provider, str):
             raise ValueError("provider must be a string")
-        key = entry.get("key")
-        if key is not None and not isinstance(key, str):
-            raise ValueError("key must be a string")
-        if key is None:
-            restored = None
-            if isinstance(hint, str) and hint:
-                restored = take(
-                    lambda item: item.get("provider") == provider and mask_key(item["key"]) == hint
-                )
-            if restored is None:
-                restored = take(lambda item: item.get("provider") == provider)
-            if restored is not None:
-                entry["key"] = restored
-        elif is_masked_key(key):
-            shown = key.strip()
-            restored = take(
-                lambda item: item.get("provider") == provider and mask_key(item["key"]) == shown
-            )
-            if restored is None and shown != "***":
-                restored = take(lambda item: mask_key(item["key"]) == shown)
-            if restored is None:
-                raise ValueError(
-                    f"The key shown for '{provider}' is masked and matches no saved key; "
-                    "enter it again."
-                )
-            entry["key"] = restored
+        # A baseUrl echoed back in its redacted form means "unchanged".
         for field in ("baseUrl", "base_url"):
             posted = entry.get(field)
             if isinstance(posted, str) and posted:
@@ -342,6 +322,49 @@ def prepare_config_payload(payload, stored) -> dict:
                             and original != posted and redact_url(original) == posted):
                         entry[field] = original
                         break
+        posted_urls = {
+            entry[field].strip() for field in ("baseUrl", "base_url")
+            if isinstance(entry.get(field), str)
+        }
+
+        def same_url(item):
+            return all(url == url_of(item) for url in posted_urls)
+
+        key = entry.get("key")
+        if key is not None and not isinstance(key, str):
+            raise ValueError("key must be a string")
+        reenter = (f"The saved key for '{provider}' cannot be reused with this base URL "
+                   "or a masked value; enter the key again.")
+        if key is None:
+            restored = None
+            if isinstance(hint, str) and hint:
+                restored = take(
+                    lambda item: item.get("provider") == provider and same_url(item)
+                    and mask_key(item["key"]) == hint
+                )
+            if restored is None:
+                restored = take(lambda item: item.get("provider") == provider and same_url(item))
+            if restored is None and any(
+                    index not in used and item.get("provider") == provider
+                    for index, item in enumerate(stored_entries)):
+                raise ValueError(reenter)
+            if restored is not None:
+                entry["key"] = restored
+        elif is_masked_key(key):
+            shown = key.strip()
+            restored = take(
+                lambda item: item.get("provider") == provider and same_url(item)
+                and mask_key(item["key"]) == shown
+            )
+            if restored is None and shown != "***":
+                restored = take(lambda item: same_url(item) and mask_key(item["key"]) == shown)
+            if restored is None:
+                raise ValueError(
+                    f"The key shown for '{provider}' is masked and matches no saved key "
+                    "for this base URL; enter it again."
+                    if not any(mask_key(i["key"]) == shown for i in stored_entries) else reenter
+                )
+            entry["key"] = restored
         providers.append(entry)
     result["providers"] = providers
     return result

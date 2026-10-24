@@ -1600,8 +1600,12 @@ class SwarmHandler(http.server.SimpleHTTPRequestHandler):
                         pass
                     # A masked placeholder is only ever replaced by the stored
                     # key it came from, never sent to a provider as-is.
+                    asked = {"provider": p_id, "key": k}
+                    for field in ("baseUrl", "base_url"):
+                        if field in payload:
+                            asked[field] = payload[field]
                     k = prepare_config_payload(
-                        {"providers": [{"provider": p_id, "key": k}]}, stored_cfg
+                        {"providers": [asked]}, stored_cfg
                     )["providers"][0]["key"]
                 ver = verify_ai_provider_key(p_id, k, base_url=b_url)
                 self.send_json_response(ver)
