@@ -28,6 +28,7 @@ import swarm_pipeline  # noqa: E402
 
 FAKE_KEY = "sk-FAKE-do-not-use-0123456789"
 PROVIDER = {"id": "groq", "name": "Mock provider", "key": FAKE_KEY}
+SECOND_PROVIDER = {"id": "gemini", "name": "Second mock", "key": "sk-FAKE-second-0123456789"}
 AGENT_IDS = [
     "01_pm", "02_arch", "03_designer", "04_dba", "05_backend",
     "06_client", "07_qa", "08_security", "09_devops", "10_tech_lead",
@@ -59,10 +60,10 @@ GOOD_TESTS = (
 )
 
 GOOD_OUTPUTS = {
-    "prd": "# Product requirements\n\nUsers can list things.",
-    "adr": "# Architecture ADR\n\nClean architecture.",
+    "prd": "# Product requirements\n\nUsers can list things. Users can create, list and remove items, and every list view shows the newest entry first.",
+    "adr": "# Architecture ADR\n\nClean architecture with domain, use case and repository layers. Users can create, list and remove items, and every list view shows the newest entry first.",
     "tokens": '{"colors": {"primary": "#fff"}, "typography": {}, "spacing": {}}',
-    "flows": "# Screen flows\n\nHome -> list.",
+    "flows": "# Screen flows\n\nHome -> list -> detail. Users can create, list and remove items, and every list view shows the newest entry first.",
     "sql": "CREATE TABLE thing (id INTEGER PRIMARY KEY);",
     "openapi": (
         "openapi: 3.0.0\ninfo:\n  title: Mock\n  version: 1.0.0\n"
@@ -70,11 +71,11 @@ GOOD_OUTPUTS = {
     ),
     "backend": "def example():\n    return 1\n",
     "client": "<html><body>App</body></html>",
-    "qa_matrix": "# QA test matrix\n\nHappy path.",
+    "qa_matrix": "# QA test matrix\n\nHappy path, empty list, boundary sizes. Users can create, list and remove items, and every list view shows the newest entry first.",
     "tests": GOOD_TESTS,
-    "security": "# Advisory security review\n\nNo findings claimed.",
+    "security": "# Advisory security review\n\nNo findings are claimed here; a scanner must confirm. Users can create, list and remove items, and every list view shows the newest entry first.",
     "docker": "FROM python:3.11-slim\n",
-    "lead": "READY FOR INDEPENDENT VERIFICATION",
+    "lead": "[READY FOR INDEPENDENT VERIFICATION]",
 }
 
 
@@ -124,9 +125,13 @@ class PipelineCase(unittest.TestCase):
     """Runs the real pipeline entry point with a faked model call."""
 
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+        self.new_root()
+
+    def new_root(self):
+        """Fresh project directory (also used between subTests so they cannot leak state)."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
         (self.root / "Dockerfile").write_text("FROM original-image\n", encoding="utf-8")
         (self.root / ".github" / "workflows").mkdir(parents=True)
         (self.root / ".github" / "workflows" / "ci.yml").write_text(
@@ -135,7 +140,7 @@ class PipelineCase(unittest.TestCase):
         self.calls = []
 
     def run_swarm(self, outputs=None, providers=None, status=True, goal="Mock task",
-                  call_hook=None, run_fn=None):
+                  call_hook=None, run_fn=None, debate=None):
         merged = dict(GOOD_OUTPUTS)
         merged.update(outputs or {})
         if status and not (self.root / "specs" / "swarm-status.json").exists():
@@ -155,8 +160,12 @@ class PipelineCase(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(patch.object(council, "get_active_providers", return_value=providers))
             stack.enter_context(patch.object(council, "call_llm", side_effect=fake_call_llm))
-            stack.enter_context(patch.object(
-                council, "run_council_debate", return_value={"status": "native_only", "consensus": None}))
+            if debate is None:
+                debate_patch = patch.object(
+                    council, "run_council_debate", return_value={"status": "native_only", "consensus": None})
+            else:
+                debate_patch = patch.object(council, "run_council_debate", side_effect=debate)
+            stack.enter_context(debate_patch)
             stack.enter_context(patch.object(swarm_pipeline.time, "sleep"))
             stack.enter_context(patch.object(swarm_pipeline, "print", create=True))
             runner = run_fn or swarm_pipeline.execute_multi_brain_swarm

@@ -121,17 +121,18 @@ Whenever the user prompts the AI CLI (`agy`) to create, scaffold, or develop a p
    - If multiple AI keys are connected: runs the **Pre-Flight Multi-AI Council Debate** where connected models dynamically split roles (e.g., Groq stress-tests edge cases and 9Router/Gemini solves them), streaming every argument live to `specs/terminal.log`.
    - Distributes the 10 engineering roles across the active AI models:
      * **01_pm**: Formulates PRD & User Stories (`specs/prd/user-stories.md`).
-     * **02_arch**: Locks Clean Architecture boundaries (`specs/architecture/adr-001.md`).
+     * **02_arch**: Drafts Clean Architecture boundaries (`specs/architecture/adr-001.md`).
      * **04_dba**: Generates 3NF Database Schema (`specs/database/schema.sql`).
      * **05_backend**: Generates OpenAPI 3.0 Contract (`specs/api/openapi.yaml`) and backend service stub.
      * **07_qa**: Establishes Test Matrix (`specs/qa/test-matrix.md`).
      * **08_security**: Produces OWASP Audit Report (`specs/security/audit-report.md`).
-     * **10_tech_lead**: Evaluates Quality Gates & Final Signoff (`specs/signoff.md`).
+     * **10_tech_lead**: Writes an advisory model review (`specs/signoff.md` only when the review is cleared; otherwise `specs/signoff.rejected.md`). Neither file is a release approval.
    - Updates `specs/swarm-status.json` and streams live logs to the TenAgent Virtual Office Dashboard in real time.
 
 2. **Post-Pipeline Code Implementation & Verification**:
    After `python swarm_pipeline.py` finishes:
-   - The AI CLI reads the locked specifications from `specs/`.
+   - If it exited non-zero, or `specs/swarm-run.json` does not say `AWAITING_VERIFICATION`, the draft is incomplete: report the failure and stop. Do not treat any file as locked.
+   - The AI CLI reads the generated draft specifications from `specs/` (they are model output, not verified evidence).
    - The AI CLI assists the client engineer and backend engineer in completing application source code (`backend/`, `frontend/`, or `mobile/`) adhering 100% strictly to `specs/database/schema.sql` and `specs/api/openapi.yaml`.
    - The AI CLI executes real test suites using the stream runner:
      ```powershell

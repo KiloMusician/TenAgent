@@ -12,14 +12,17 @@ import swarm_pipeline
 
 PROVIDER = {"id": "groq", "name": "Mock provider", "key": "not-a-real-key"}
 OUTPUTS = [
-    "# Product requirements", "# Architecture ADR",
+    "# Product requirements\n\nUsers can list things. Users can create, list and remove items, and every list view shows the newest entry first.", "# Architecture ADR\n\nClean architecture with several layers. Users can create, list and remove items, and every list view shows the newest entry first.",
     '{"colors": {"primary": "#fff"}, "typography": {}, "spacing": {}}',
-    "# Screen flows", "CREATE TABLE thing (id INTEGER PRIMARY KEY);",
-    "openapi: 3.0.0\ninfo:\n  title: Mock\n  version: 1.0.0\npaths: {}",
+    "# Screen flows\n\nHome -> list -> detail. Users can create, list and remove items, and every list view shows the newest entry first.", "CREATE TABLE thing (id INTEGER PRIMARY KEY);",
+    # A contract with no routes and a "test" that asserts 1 == 1 are not deliverables;
+    # the pipeline now rejects both, so the success fixtures must be realistic.
+    "openapi: 3.0.0\ninfo:\n  title: Mock\n  version: 1.0.0\npaths:\n  /health:\n    get:\n      responses: {}\n",
     "def example():\n    return 1", "<html><body>App</body></html>",
-    "# QA test matrix", "import unittest\nclass TestThing(unittest.TestCase):\n    def test_one(self):\n        self.assertEqual(1, 1)",
-    "# Advisory security review", "FROM python:3.11-slim",
-    "READY FOR INDEPENDENT VERIFICATION",
+    "# QA test matrix\n\nHappy path and edge cases. Users can create, list and remove items, and every list view shows the newest entry first.",
+    "import unittest\nfrom main import example\nclass TestThing(unittest.TestCase):\n    def test_one(self):\n        self.assertEqual(example(), 1)",
+    "# Advisory security review\n\nNothing is claimed as verified. Users can create, list and remove items, and every list view shows the newest entry first.", "FROM python:3.11-slim",
+    "[READY FOR INDEPENDENT VERIFICATION]",
 ]
 
 
@@ -97,10 +100,11 @@ class SwarmFailClosedTests(unittest.TestCase):
         self.assertFalse(passed)
         self.assertNotIn("specs/signoff.md", result["files"])
 
-    def test_model_rejection_is_preserved(self):
-        passed, result = self.run_swarm((12, "REJECTED - REMEDIATION REQUIRED"))
+    def test_model_rejection_is_preserved_without_creating_a_signoff(self):
+        passed, result = self.run_swarm((12, "[REJECTED - REMEDIATION REQUIRED]"))
         self.assertFalse(passed)
-        self.assertIn("NOT VERIFIED", result["signoff"])
+        self.assertNotIn("specs/signoff.md", result["files"])
+        self.assertIn("specs/signoff.rejected.md", result["files"])
 
     def test_full_generation_requires_independent_verification(self):
         passed, result = self.run_swarm()
