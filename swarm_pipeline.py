@@ -20,6 +20,11 @@ import urllib.error
 import council
 
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+# Same lock and atomic replace as dashboard/serve.py, which runs this pipeline
+# on a thread of its own process.
+from dashboard.statefile import update_json_file
 SPECS_DIR = os.path.join(ROOT_DIR, "specs")
 LOG_FILE = os.path.join(SPECS_DIR, "terminal.log")
 STATUS_FILE = os.path.join(SPECS_DIR, "swarm-status.json")
@@ -63,13 +68,8 @@ def log_swarm_message(agent_id: str, message: str, root_dir: str = None):
 
 def update_swarm_status(agent_id: str, status: str, process_detail: str, progress: int = None, root_dir: str = None, overall_progress: int = None, phase: str = None):
     target_status = os.path.join(root_dir or ROOT_DIR, "specs", "swarm-status.json")
-    if not os.path.exists(target_status):
-        return
 
-    try:
-        with open(target_status, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
+    def apply(data):
         if overall_progress is not None and "project" in data:
             data["project"]["overallProgress"] = max(0, min(100, int(overall_progress)))
         if phase and "project" in data:
@@ -93,11 +93,10 @@ def update_swarm_status(agent_id: str, status: str, process_detail: str, progres
             "message": f"[{agent_id}] {process_detail[:140]}"
         })
         data["logs"] = data["logs"][-50:]
+        return True
 
-        tmp_path = target_status + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, target_status)
+    try:
+        update_json_file(target_status, apply)
     except Exception:
         pass
 
